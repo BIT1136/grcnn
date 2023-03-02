@@ -1,0 +1,7 @@
+<launch>
+    <param name="cx" value="3.0"/>
+    <node name="publish_rgbd" pkg="grcnn" type="provider.py"/>
+    <node name="process_rgbd" pkg="grcnn" type="processor.py">
+        <param name="cy" value="2.0"/>
+    </node>
+</launch>

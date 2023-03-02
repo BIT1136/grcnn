@@ -1,4 +1,4 @@
-#!/home/yangzhuo/mambaforge/envs/grcnn/bin/python
+#!/root/mambaforge/envs/grcnn/bin/python
 # 按键时从orbbec话题截取RGB和深度图发送到话题
 
 import rospy
@@ -10,12 +10,13 @@ from std_msgs.msg import String
 from std_msgs.msg import Header
 from sensor_msgs.msg import Image
 from grcnn.msg import Rgbd
+from grcnn.srv import GetGraspLocal
 import torch
 
 IMAGE_HEIGHT=224
 IMAGE_WIDTH=224
 
-def publish_image(rgb,depth,publisher):
+def callProcessor(rgb,depth):
     rgbd=Rgbd()
     header = Header()
     rgbd.header=header
@@ -37,12 +38,15 @@ def publish_image(rgb,depth,publisher):
     image_temp.header=header
     image_temp.step=IMAGE_WIDTH*1
     rgbd.rgb=image_temp
-    publisher.publish(rgbd)
+    rospy.wait_for_service('plan_grasp')
+    try:
+        handle = rospy.ServiceProxy('plan_grasp', GetGraspLocal)
+        data = handle(rgb, depth)
+        return data
+    except rospy.ServiceException as e:
+        print("Service call failed: %s"%e)
 
 def provider():
-    rospy.init_node('provider', anonymous=True)
-    pub = rospy.Publisher('imagePair', Rgbd, queue_size=10)
-
     while input()=="":
         rgb = rospy.wait_for_message("",Image,10)
         print("get rgb image")
@@ -51,7 +55,7 @@ def provider():
         rgb=ros_numpy.numpify(rgb)
         depth=ros_numpy.numpify(depth)
         print("np images:\n",rgb,depth)
-        publish_image(rgb,depth,pub)
+        callProcessor(rgb,depth)
 
 if __name__ == '__main__':
     try:

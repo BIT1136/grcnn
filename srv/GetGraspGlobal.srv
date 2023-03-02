@@ -1,0 +1,7 @@
+#请求：对应的RGB和深度图，世界坐标系到相机坐标系的变换
+sensor_msgs/Image rgb
+sensor_msgs/Image depth
+geometry_msgs/TransformStamped transform
+---
+#响应：世界坐标系中的抓取位姿
+geometry_msgs/Pose grasp
