@@ -8,6 +8,7 @@ from torchvision import transforms
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 import numpy as np
+from skimage.transform import resize
 import os
 from io import BytesIO
 from PIL import Image as pImage
@@ -20,9 +21,12 @@ from utils import *
 
 class processor:
     def __init__(self):
+        rospy.loginfo("load ")
         self.model = torch.load("/root/2d_grasp/src/grcnn/models/jac_rgbd_epoch_48_iou_0.93",
                                 map_location=torch.device('cpu'))
         rospy.init_node('processor')
+
+        self.inputSize=(300,300)
 
         #相机内参 考虑深度为空间点到相机平面的垂直距离
         self.cx=rospy.get_param('cx', 1)
@@ -36,12 +40,26 @@ class processor:
 
         rospy.Service('plan_grasp', GetGraspLocal, self.callback)
         rospy.spin()
+
+    def numpy_to_torch(self,s):
+        if len(s.shape) == 2:
+            rospy.loginfo("len(x.shape) == 2")
+            return torch.from_numpy(np.expand_dims(s, 0).astype(np.float32))
+        else:
+            rospy.loginfo("len(x.shape) != 2")
+            return torch.from_numpy(s.astype(np.float32))
     
     def callback(self,data):
         rgb=ros_numpy.numpify(data.rgb)
         depth=ros_numpy.numpify(data.depth)
-        x=np.concatenate((np.expand_dims(rgb, 0),np.expand_dims(depth, 0)),1)
-        x=torch.from_numpy(np.expand_dims(x, 0).astype(np.float32))
+        rgb=resize(rgb, self.inputSize, preserve_range=True).astype(np.uint8)
+        depth=resize(depth, self.inputSize, preserve_range=True).astype(np.float32)
+        # normalise
+        rgb = np.clip((rgb - rgb.mean()), -1, 1)
+        depth = np.clip((depth - depth.mean()), -1, 1)
+        x=np.concatenate((np.expand_dims(depth, 0),rgb),0)#[4, 300, 300]
+        rospy.loginfo("x.shape=%s",x.shape)
+        x=self.numpy_to_torch(x)
         with torch.no_grad():
             xc = x.to(device)
             pred = model.predict(xc)
@@ -50,6 +68,7 @@ class processor:
         grasps = detect_grasps(q_img, ang_img, width_img)
 
         if len(grasps)==0:
+            rospy.logwarn("no grasp detected!")
             print("no grasp detected!")
             return
         
