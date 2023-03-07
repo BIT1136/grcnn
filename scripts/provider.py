@@ -2,16 +2,11 @@
 # 按键时从orbbec话题截取RGB和深度图发送到话题
 
 import rospy
-import numpy as np
 import ros_numpy
-import os
-from PIL import Image as pImage
-from std_msgs.msg import String
 from std_msgs.msg import Header
 from sensor_msgs.msg import Image
 from grcnn.msg import Rgbd
 from grcnn.srv import GetGraspLocal
-import torch
 
 IMAGE_HEIGHT=224
 IMAGE_WIDTH=224

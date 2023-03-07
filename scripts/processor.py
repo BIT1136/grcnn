@@ -4,17 +4,8 @@ import rospy
 import ros_numpy
 
 import torch
-from torchvision import transforms
-import matplotlib.pyplot as plt
-import torch.nn.functional as F
 import numpy as np
 from skimage.transform import resize
-import os
-from io import BytesIO
-from PIL import Image as pImage
-from std_msgs.msg import Header
-from sensor_msgs.msg import Image
-from grcnn.msg import Rgbd
 from grcnn.srv import GetGraspLocal,GetGraspLocalResponse
 
 from utils import *
@@ -22,7 +13,7 @@ from utils import *
 class processor:
     def __init__(self):
         rospy.loginfo("load ")
-        self.model = torch.load("/root/2d_grasp/src/grcnn/models/jac_rgbd_epoch_48_iou_0.93",
+        self.model = torch.load("/root/grasp/src/grcnn/models/jac_rgbd_epoch_48_iou_0.93",
                                 map_location=torch.device('cpu'))
         rospy.init_node('processor')
 
