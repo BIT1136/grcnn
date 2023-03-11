@@ -1,0 +1,60 @@
+network input:
+torch.Tensor [4, 300, 300]
+
+from imageio import imread
+
+from skimage.transform import resize
+
+jac:
+depth:
+depth_img = imread(fname)
+convert to numpy.ndarray
+#normalise to [-1,1]
+depth_img = np.clip((depth_img - depth_img.mean()), -1, 1)
+resize(depth_img, (300,300), preserve_range=True).astype(float32)
+
+
+rgb:
+rgb_img = imread(fname)
+convert to numpy.ndarray
+resize(rgb_img, (300,300), preserve_range=True).astype(uint8)
+rgb_img = rgb_img.astype(np.float32) / 255.0
+rgb_img -= rgb_img.mean()
+rgb_img = rgb_img.transpose((2, 0, 1))
+
+两种normalise方式误差非常小
+[-0.02126509 -0.02126509 -0.02126509]
+[-0.02126521 -0.02126521 -0.02126521]
+
+x = self.numpy_to_torch(
+    np.concatenate(
+        (np.expand_dims(depth_img, 0),
+        rgb_img),
+        0
+    )
+)
+
+def numpy_to_torch(s):
+    if len(s.shape) == 2:
+        return torch.from_numpy(np.expand_dims(s, 0).astype(np.float32))
+    else:
+        return torch.from_numpy(s.astype(np.float32))
+
+
+read by imageio.imread
+<class 'imageio.core.util.Array'>
+depthImg:
+1024*1024
+[[1.5742819 1.5742819 1.5742819 ... 1.5742819 1.5742819 1.5742819]
+[1.5740792 1.5740792 1.5740792 ... 1.5740792 1.5740792 1.5740792]
+[1.5738758 1.5738758 1.5738758 ... 1.5738758 1.5738758 1.5738758]
+...
+dtype:float32
+
+rgbImg:
+1024*1024*3
+[[[178 178 178]
+[178 178 178]
+[177 177 177]
+...
+dtype:uint8

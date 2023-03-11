@@ -12,13 +12,13 @@ from utils import *
 
 class processor:
     def __init__(self):
-        rospy.loginfo("load ")
+        rospy.loginfo("load model")
+        self.device=torch.device('cpu')
         self.model = torch.load("/root/grasp/src/grcnn/models/jac_rgbd_epoch_48_iou_0.93",
-                                map_location=torch.device('cpu'))
-        rospy.init_node('processor')
+                                map_location=self.device)
+        self.model.eval()
 
         self.inputSize=(300,300)
-
         #相机内参 考虑深度为空间点到相机平面的垂直距离
         self.cx=rospy.get_param('cx', 1)
         self.cy=rospy.get_param('~cy', '1')
@@ -29,6 +29,7 @@ class processor:
         self.depthScale=rospy.get_param('~depthScale', '')
         self.depthBias=rospy.get_param('~depthBias', '')
 
+        rospy.init_node('processor')
         rospy.Service('plan_grasp', GetGraspLocal, self.callback)
         rospy.spin()
 
@@ -52,16 +53,17 @@ class processor:
         rospy.loginfo("x.shape=%s",x.shape)
         x=self.numpy_to_torch(x)
         with torch.no_grad():
-            xc = x.to(device)
-            pred = model.predict(xc)
+            xc = x.to(self.device)
+            pred = self.model.predict(xc)
 
         q_img, ang_img, width_img = post_process_output(pred['pos'], pred['cos'], pred['sin'], pred['width'])
         grasps = detect_grasps(q_img, ang_img, width_img)
 
         if len(grasps)==0:
             rospy.logwarn("no grasp detected!")
-            print("no grasp detected!")
             return
+        else:
+            rospy.loginfo("grasp detected:%s",grasps)
         
         # 原始方法：直接根据xy坐标从深度图获取z
         # pos_z = depth[grasps[0].center[0] + self.cam_data.top_left[0], grasps[0].center[1] + self.cam_data.top_left[1]] * self.cam_depth_scale - 0.04
@@ -74,16 +76,16 @@ class processor:
 
         pos_z=depth[grasps[0].cneter[0]+0,grasps[0].center[1]+0]*self.depthScale+self.depthBias
         pos_x=np.multiply(grasps[0].cneter[0]-self.cx,pos_z/self.fx)
-        pos_x=np.multiply(grasps[0].cneter[1]-self.cy,pos_z/self.fy)
+        pos_y=np.multiply(grasps[0].cneter[1]-self.cy,pos_z/self.fy)
 
         target = np.asarray([pos_x, pos_y, pos_z])
         target.shape = (3, 1)
         print('target: ', target)
 
         #相机外参
-        T=ros_numpy.numpify(data.T)
-        worldTarget=T*target
-        print('worldTarget: ', worldTarget)
+        # T=ros_numpy.numpify(data.T)
+        # worldTarget=T*target
+        # print('worldTarget: ', worldTarget)
 
         return GetGraspLocalResponse()
 
