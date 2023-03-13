@@ -1,7 +1,0 @@
-#请求：对应的RGB和深度图
-sensor_msgs/Image rgb
-sensor_msgs/Image depth
----
-#响应：抓取位置在相机坐标系中的坐标，竖直旋转角度
-geometry_msgs/Point position
-float64 orientation

@@ -16,8 +16,7 @@ add_message_files(
 
 add_service_files(
   FILES
-  GetGraspGlobal.srv
-  GetGraspLocal.srv
+  GetGrasp.srv
 )
 
 generate_messages(

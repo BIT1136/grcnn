@@ -1,7 +1,9 @@
 <launch>
-    <param name="cx" value="3.0"/>
-    <node name="publish_rgbd" pkg="grcnn" type="provider.py"/>
-    <node name="process_rgbd" pkg="grcnn" type="processor.py">
-        <param name="cy" value="2.0"/>
+    <node name="publish_rgbd" pkg="grcnn" type="provider.py" output="screen"/>
+    <node name="process_rgbd" pkg="grcnn" type="processor.py" output="screen">
+        <param name="fx" value="517"/>
+        <param name="fy" value="517"/>
+        <param name="cx" value="311"/>
+        <param name="cy" value="237"/>
     </node>
 </launch>

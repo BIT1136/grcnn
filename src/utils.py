@@ -34,49 +34,8 @@ class Grasp:
         self.length = length
         self.width = width
 
-    # @property
-    # def as_gr(self):
-    #     """
-    #     Convert to GraspRectangle
-    #     :return: GraspRectangle representation of grasp.
-    #     """
-    #     xo = np.cos(self.angle)
-    #     yo = np.sin(self.angle)
-
-    #     y1 = self.center[0] + self.length / 2 * yo
-    #     x1 = self.center[1] - self.length / 2 * xo
-    #     y2 = self.center[0] - self.length / 2 * yo
-    #     x2 = self.center[1] + self.length / 2 * xo
-
-    #     return GraspRectangle(np.array(
-    #         [
-    #             [y1 - self.width / 2 * xo, x1 - self.width / 2 * yo],
-    #             [y2 - self.width / 2 * xo, x2 - self.width / 2 * yo],
-    #             [y2 + self.width / 2 * xo, x2 + self.width / 2 * yo],
-    #             [y1 + self.width / 2 * xo, x1 + self.width / 2 * yo],
-    #         ]
-    #     ).astype(np.float))
-
-    # def max_iou(self, grs):
-    #     """
-    #     Return maximum IoU between self and a list of GraspRectangles
-    #     :param grs: List of GraspRectangles
-    #     :return: Maximum IoU with any of the GraspRectangles
-    #     """
-    #     self_gr = self.as_gr
-    #     max_iou = 0
-    #     for gr in grs:
-    #         iou = self_gr.iou(gr)
-    #         max_iou = max(max_iou, iou)
-    #     return max_iou
-
-    # def plot(self, ax, color=None):
-    #     """
-    #     Plot Grasp
-    #     :param ax: Existing matplotlib axis
-    #     :param color: (optional) color
-    #     """
-    #     self.as_gr.plot(ax, color)
+    def __str__(self) -> str:
+        return f"center:{self.center},angle:{self.angle},length:{self.length}"
 
     def to_jacquard(self, scale=1):
         """
@@ -89,7 +48,7 @@ class Grasp:
             self.center[1] * scale, self.center[0] * scale, -1 * self.angle * 180 / np.pi, self.length * scale,
             self.width * scale)
 
-def detect_grasps(q_img, ang_img, width_img=None, no_grasps=1):
+def detect_grasps(q_img, ang_img, width_img=None, no_grasps=1)->list[Grasp]:
     """
     Detect grasps in a network output.
     :param q_img: Q image network output
@@ -98,7 +57,7 @@ def detect_grasps(q_img, ang_img, width_img=None, no_grasps=1):
     :param no_grasps: Max number of grasps to return
     :return: list of Grasps
     """
-    local_max = peak_local_max(q_img, min_distance=20, threshold_abs=0.2, num_peaks=no_grasps)
+    local_max = peak_local_max(q_img, min_distance=20, threshold_abs=0.7, num_peaks=no_grasps)
 
     grasps = []
     for grasp_point_array in local_max:
