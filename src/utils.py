@@ -35,7 +35,7 @@ class Grasp:
         self.width = width
 
     def __str__(self) -> str:
-        return f"center:{self.center},angle:{self.angle},length:{self.length}"
+        return f"center:{self.center},angle:{self.angle:.3f},length:{self.length:.3f}"
 
     def to_jacquard(self, scale=1):
         """
@@ -55,7 +55,7 @@ def detect_grasps(q_img, ang_img, width_img=None, no_grasps=1)->list[Grasp]:
     :param ang_img: Angle image network output
     :param width_img: (optional) Width image network output
     :param no_grasps: Max number of grasps to return
-    :return: list of Grasps
+    :return: list of Grasps(行,列)即(y,x)
     """
     local_max = peak_local_max(q_img, min_distance=20, threshold_abs=0.7, num_peaks=no_grasps)
 

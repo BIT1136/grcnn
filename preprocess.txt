@@ -58,3 +58,10 @@ rgbImg:
 [177 177 177]
 ...
 dtype:uint8
+
+
+tiff from Jac:
+(1024,1024) float32 区间[1.4,1.5]
+
+png from Jac:
+(1024, 1024, 3) uint8
