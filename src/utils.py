@@ -23,6 +23,7 @@ def post_process_output(q_img, cos_img, sin_img, width_img):
 
     return q_img, ang_img, width_img
 
+
 class Grasp:
     """
     A Grasp represented by a center pixel, rotation angle and gripper width (length)
@@ -30,7 +31,8 @@ class Grasp:
 
     def __init__(self, center, angle, length=60, width=30):
         self.center = center
-        self.angle = angle  # Positive angle means rotate anti-clockwise from horizontal.
+        # Positive angle means rotate anti-clockwise from horizontal.
+        self.angle = angle
         self.length = length
         self.width = width
 
@@ -44,11 +46,16 @@ class Grasp:
         :return: string in Jacquard format
         """
         # Output in jacquard format.
-        return '%0.2f;%0.2f;%0.2f;%0.2f;%0.2f' % (
-            self.center[1] * scale, self.center[0] * scale, -1 * self.angle * 180 / np.pi, self.length * scale,
-            self.width * scale)
+        return "%0.2f;%0.2f;%0.2f;%0.2f;%0.2f" % (
+            self.center[1] * scale,
+            self.center[0] * scale,
+            -1 * self.angle * 180 / np.pi,
+            self.length * scale,
+            self.width * scale,
+        )
 
-def detect_grasps(q_img, ang_img, width_img=None, no_grasps=1)->list[Grasp]:
+
+def detect_grasps(q_img, ang_img, width_img=None, no_grasps=1) -> list[Grasp]:
     """
     Detect grasps in a network output.
     :param q_img: Q image network output
@@ -57,7 +64,9 @@ def detect_grasps(q_img, ang_img, width_img=None, no_grasps=1)->list[Grasp]:
     :param no_grasps: Max number of grasps to return
     :return: list of Grasps(行,列)即(y,x)
     """
-    local_max = peak_local_max(q_img, min_distance=20, threshold_abs=0.7, num_peaks=no_grasps)
+    local_max = peak_local_max(
+        q_img, min_distance=20, threshold_abs=0.7, num_peaks=no_grasps
+    )
 
     grasps = []
     for grasp_point_array in local_max:
