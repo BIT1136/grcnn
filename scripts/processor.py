@@ -5,32 +5,21 @@ import ros_numpy
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Point
 
+import time
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
-import skimage
+from scipy.stats import mode
 from skimage.transform import resize
 from grcnn.srv import GetGrasp
 
 from utils import *
 
 
-def to_u8(array: np.ndarray, max=255):
-    array = array - array.min()
-    return array * (max / array.max())
-
-
-def normalise(img: np.ndarray, factor=255):
-    img = img.astype(np.float32) / factor
-    img -= img.mean()
-    return img
-
-
 class processor:
     def __init__(self):
         rospy.init_node("processor")
 
-        rospy.loginfo("load model")
+        rospy.logdebug("load model")
         self.device = torch.device("cpu")
         self.model = torch.load(
             "/root/grasp/src/grcnn/models/jac_rgbd_epoch_48_iou_0.93",
@@ -38,8 +27,6 @@ class processor:
         )
         self.model.eval()
 
-        self.rgbInputSize = (3, 300, 300)
-        self.depthInputSize = (1, 300, 300)
         # 相机内参 考虑深度为空间点到相机平面的垂直距离
         self.cx = rospy.get_param("~cx", 311)
         self.cy = rospy.get_param("~cy", 237)
@@ -47,8 +34,8 @@ class processor:
         self.fy = rospy.get_param("~fy", 517)
         self.depthScale = rospy.get_param("~depthScale", 1)
         self.depthBias = rospy.get_param("~depthBias", 0)
-        rospy.loginfo(
-            "cx=%s,cy=%s,fx=%s,fy=%s,ds=%s,db=%s",
+        rospy.logdebug(
+            "cx=%s, cy=%s, fx=%s, fy=%s, ds=%s, db=%s",
             self.cx,
             self.cy,
             self.fx,
@@ -58,146 +45,143 @@ class processor:
         )
 
         self.useCrop = rospy.get_param("~useCrop", False)
-        width = 640
+        """裁剪图像至目标尺寸，否则将图像压缩至目标尺寸"""
+        width = 640  # 640
         height = 480
-        output_size = 300
-        left = (width - output_size) // 2
-        top = (height - output_size) // 2
-        right = (width + output_size) // 2
-        bottom = (height + output_size) // 2
+        size = 300
+        self.size = size
+        left = (width - size) // 2
+        top = (height - size) // 2
+        right = (width + size) // 2
+        bottom = (height + size) // 2
         self.bottom_right = (bottom, right)
         self.top_left = (top, left)
 
-        self.pub = rospy.Publisher("processed_img", Image, queue_size=10)
+        self.zeroDepthPolicy = rospy.get_param("~zeroDepthPolicy", "mean")
+        """mean:将0值替换为深度图其他值的均值
+        mode:将0值替换为深度图其他值的众数"""
+        self.applyGaussian=rospy.get_param("~applyGaussian", True)
+        """是否对网络输出进行高斯滤波"""
+
+        self.dpub = rospy.Publisher("fixed_depth", Image, queue_size=10)
+        self.pub = rospy.Publisher("plotted_grabs", Image, queue_size=10)
         self.qpub = rospy.Publisher("img_q", Image, queue_size=10)
         self.apub = rospy.Publisher("img_a", Image, queue_size=10)
         self.wpub = rospy.Publisher("img_w", Image, queue_size=10)
         rospy.Service("plan_grasp", GetGrasp, self.callback)
         rospy.spin()
 
-    def crop(self, img, channelAhead=False):
+    def crop(self, img, channelFirst=False):
         if len(img.shape) == 2:
             return img[
                 self.top_left[0] : self.bottom_right[0],
                 self.top_left[1] : self.bottom_right[1],
             ]
-        elif len(img.shape) == 3 and channelAhead:
+        elif len(img.shape) == 3 and channelFirst:
             return img[
+                :,
                 self.top_left[0] : self.bottom_right[0],
                 self.top_left[1] : self.bottom_right[1],
-                :,
             ]
         elif len(img.shape) == 3:
             return img[
-                :,
                 self.top_left[0] : self.bottom_right[0],
                 self.top_left[1] : self.bottom_right[1],
+                :,
             ]
         else:
             raise NotImplementedError
 
     def callback(self, data):
         rospy.loginfo("start inferencing")
+        t_start = time.perf_counter()
+
+        # 获取并预处理图像
         rgb_raw: np.ndarray = ros_numpy.numpify(data.rgb)  # (480, 640, 3) uint8
-        rgb = rgb_raw.transpose((2, 0, 1))  # (3,480,640)
         depth_raw: np.ndarray = ros_numpy.numpify(data.depth)  # (480, 640) uint16 单位为毫米
-        depth = np.expand_dims(depth_raw, 0)
+        if self.zeroDepthPolicy == "mean":
+            meanVal = depth_raw[depth_raw != 0].mean()
+            rospy.logdebug(f"replace 0 by mean = {meanVal}")
+            depth_raw[depth_raw == 0] = meanVal
+        elif self.zeroDepthPolicy == "mode":
+            modeVal = mode(depth_raw[depth_raw != 0], axis=None, keepdims=False)[0]
+            rospy.logdebug(f"replace 0 by mode = {modeVal}")
+            depth_raw[depth_raw == 0] = modeVal
         if self.useCrop:
-            rgb = self.crop(rgb)
-            depth = self.crop(depth)
+            rgb_raw = self.crop(rgb_raw)
+            depth_raw = self.crop(depth_raw)
         else:
-            rgb = resize(rgb, self.rgbInputSize, preserve_range=True).astype(np.float32)
-            depth = resize(depth, self.depthInputSize, preserve_range=True).astype(
-                np.float32
-            )
-        # normalise
-        # rgb = np.clip((rgb - rgb.mean()), -1, 1)
-        # depth = np.clip((depth - depth.mean()), -1, 1)
+            rgb_raw = resize(
+                rgb_raw, (self.size, self.size, 3), preserve_range=True
+            ).astype(np.uint8)
+            depth_raw = resize(
+                depth_raw, (self.size, self.size), preserve_range=True
+            ).astype(np.uint16)
+        self.dpub.publish(ros_numpy.msgify(Image, to_u8(depth_raw), encoding="mono8"))
+        rgb = rgb_raw.transpose((2, 0, 1))  # (3,size,size)
+        depth = np.expand_dims(depth_raw, 0)  # (1,size,size)
         rgb = normalise(rgb)
         depth = normalise(depth, 1000)
         x = np.concatenate((depth, rgb), 0)
-        x = np.expand_dims(x, 0)  # (1, 4, 300, 300)
-        x = torch.from_numpy(x)
+        x = np.expand_dims(x, 0)  # (1, 4, size, size)
+
+        # 推理
+        x = torch.from_numpy(x).to(self.device)
         with torch.no_grad():
-            xc = x.to(self.device)
-            pred = self.model.predict(xc)
+            pred = self.model.predict(x)
 
-        # np.ndarray (300,300) dtype=float32
+        # 后处理
         q_img, ang_img, width_img = post_process_output(
-            pred["pos"], pred["cos"], pred["sin"], pred["width"]
+            pred["pos"], pred["cos"], pred["sin"], pred["width"],self.applyGaussian
         )
-        # print(q_img.min(),q_img.max())#-0.47500402 1.3665676
-        # print(ang_img.min(),ang_img.max())#-1.5282992 1.5262172
-        # print(width_img.min(),width_img.max())#-65.58831 63.643776
-        self.qpub.publish(
-            ros_numpy.msgify(Image, to_u8(q_img).astype(np.uint8), encoding="mono8")
-        )
-        self.apub.publish(
-            ros_numpy.msgify(Image, to_u8(ang_img).astype(np.uint8), encoding="mono8")
-        )
-        self.wpub.publish(
-            ros_numpy.msgify(Image, to_u8(width_img).astype(np.uint8), encoding="mono8")
-        )
+        """尺寸与输入相同,典型区间:
+        -0.01~0.96
+        -0.90~1.36
+        -3.05~60.57"""
+        self.qpub.publish(ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8"))
+        self.apub.publish(ros_numpy.msgify(Image, to_u8(ang_img), encoding="mono8"))
+        self.wpub.publish(ros_numpy.msgify(Image, to_u8(width_img), encoding="mono8"))
+        minWidth = width_img.min()
+
         grasps = detect_grasps(q_img, ang_img, width_img, 5)
-
+        t_end = time.perf_counter()
+        rospy.loginfo(f"End inferencing, time cost: {(t_end - t_start)*1000:.2f}ms")
         if len(grasps) == 0:
-            raise rospy.ServiceException("no grasp detected")
+            raise rospy.ServiceException("No grasp detected.")
         else:
-            rospy.loginfo("grasp detected:%s", [str(g) for g in grasps])
-
-        if self.useCrop:
-            rgb_raw = self.crop(rgb_raw, True)
-            depth_raw = self.crop(depth_raw)
-        else:
-            rgb_raw = resize(rgb_raw, (300, 300, 3), preserve_range=True).astype(
-                np.uint8
+            rospy.loginfo(
+                f"{len(grasps)} grasp(s) detected: {[str(g) for g in grasps]}"
             )
-            depth_raw = resize(depth_raw, (300, 300), preserve_range=True)
 
         # 绘制抓取线
         for g in grasps:
-            center = g.center
-            # for x in range(-2,3):
-            #     for y in range(-2,3):
-            #         q_img[center[0]+y,center[1]+x]=2
-            angle = g.angle
-            length = abs(g.length)
-            xo = np.cos(angle)
-            yo = np.sin(angle)
-            y1 = center[0] + length / 2 * yo
-            x1 = center[1] - length / 2 * xo
-            y2 = center[0] - length / 2 * yo
-            x2 = center[1] + length / 2 * xo
-
-            x1, y1, x2, y2 = list(map((lambda x: x.astype(np.uint8)), [x1, y1, x2, y2]))
-            line = skimage.draw.line(y1, x1, y2, x2)
-            # rgb_raw[line]=[255,255,255]
-            # depth_raw[line]=[1000]
-            q_img[line] = 2
-        # self.pub.publish(ros_numpy.msgify(Image, rgb_raw, encoding='rgb8'))
-        # self.pub.publish(ros_numpy.msgify(Image, to_u8(depth_raw).astype(np.uint8), encoding='mono8'))
-        self.pub.publish(
-            ros_numpy.msgify(Image, to_u8(q_img).astype(np.uint8), encoding="mono8")
-        )
+            line, val = g.draw(minWidth, self.size)
+            # rgb_raw[line] += (
+            #     ((255, 0, 0) - rgb_raw[line]) * np.expand_dims(val, 1)
+            # ).astype(np.uint8)
+            depth_raw[line] += (val * 200).astype(np.uint16)
+            # q_img[line] += val
+        # self.pub.publish(ros_numpy.msgify(Image, rgb_raw, encoding="rgb8"))
+        self.pub.publish(ros_numpy.msgify(Image, to_u8(depth_raw), encoding="mono8"))
+        # self.pub.publish(ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8"))
 
         # 计算相机坐标系下的坐标
         for g in grasps:
-            x = g.center[0]
-            y = g.center[1]
+            y = g.center[0]
+            x = g.center[1]
             a = g.angle
             pos_z = depth_raw[x + 0, y + 0] * self.depthScale + self.depthBias
-            if pos_z < 100:
-                print(f"got z={pos_z} at {x},{y}")
             pos_x = np.multiply(x - self.cx, pos_z / self.fx)
             pos_y = np.multiply(y - self.cy, pos_z / self.fy)
 
-            if pos_z < 100:
+            if pos_z < 200:
+                rospy.logwarn(f"Depth too small: {pos_z:.3f}, ignored")
                 continue
 
-            rospy.loginfo("target: [%.3f,%.3f,%.3f]", pos_x, pos_y, pos_z)
+            rospy.loginfo(f"target: [{pos_x:.3f},{pos_y:.3f},{pos_z:.3f}]")
             return (Point(pos_x, pos_y, pos_z), a)
 
-        raise rospy.ServiceException("No depth pixel")
+        raise rospy.ServiceException("Can't find valid grasp.")
 
 
 if __name__ == "__main__":
