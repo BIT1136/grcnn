@@ -8,7 +8,6 @@ from grcnn.srv import GetGrasp
 
 def provider():
     while input() == "":
-        rospy.loginfo("info")
         try:
             rgb = rospy.wait_for_message("/camera/color/image_raw", Image, 10)
         except rospy.ROSException as e:
