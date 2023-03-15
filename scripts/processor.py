@@ -10,8 +10,8 @@ import torch
 import numpy as np
 from scipy.stats import mode
 from skimage.transform import resize
-from grcnn.srv import GetGrasp
 
+from grcnn.srv import GetGrasp
 from utils import *
 
 
@@ -20,14 +20,14 @@ class processor:
         rospy.init_node("processor")
 
         rospy.logdebug("load model")
-        self.device = torch.device("cpu")
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model = torch.load(
             "/root/grasp/src/grcnn/models/jac_rgbd_epoch_48_iou_0.93",
             map_location=self.device,
         )
         self.model.eval()
 
-        # 相机内参 考虑深度为空间点到相机平面的垂直距离
+        # 相机内参
         self.cx = rospy.get_param("~cx", 311)
         self.cy = rospy.get_param("~cy", 237)
         self.fx = rospy.get_param("~fx", 517)
@@ -44,10 +44,10 @@ class processor:
             self.depthBias,
         )
 
+        width = rospy.get_param("~width", 640)
+        height = rospy.get_param("~height", 480)
         self.useCrop = rospy.get_param("~useCrop", False)
         """裁剪图像至目标尺寸，否则将图像压缩至目标尺寸"""
-        width = 640  # 640
-        height = 480
         size = 300
         self.size = size
         left = (width - size) // 2
@@ -60,14 +60,20 @@ class processor:
         self.zeroDepthPolicy = rospy.get_param("~zeroDepthPolicy", "mean")
         """mean:将0值替换为深度图其他值的均值
         mode:将0值替换为深度图其他值的众数"""
-        self.applyGaussian=rospy.get_param("~applyGaussian", True)
+        self.applyGaussian = rospy.get_param("~applyGaussian", True)
         """是否对网络输出进行高斯滤波"""
+        self.publishIntermediateData = rospy.get_param("~publishIntermediateData", True)
+        """是否发布修复的深度图和网络输出"""
+        self.publishVisualisation = rospy.get_param("~publishVisualisation", True)
+        """是否发布绘制的抓取结果"""
 
-        self.dpub = rospy.Publisher("fixed_depth", Image, queue_size=10)
-        self.pub = rospy.Publisher("plotted_grabs", Image, queue_size=10)
-        self.qpub = rospy.Publisher("img_q", Image, queue_size=10)
-        self.apub = rospy.Publisher("img_a", Image, queue_size=10)
-        self.wpub = rospy.Publisher("img_w", Image, queue_size=10)
+        if self.publishIntermediateData:
+            self.dpub = rospy.Publisher("fixed_depth", Image, queue_size=10)
+            self.qpub = rospy.Publisher("img_q", Image, queue_size=10)
+            self.apub = rospy.Publisher("img_a", Image, queue_size=10)
+            self.wpub = rospy.Publisher("img_w", Image, queue_size=10)
+        if self.publishVisualisation:
+            self.vpub = rospy.Publisher("plotted_grabs", Image, queue_size=10)
         rospy.Service("plan_grasp", GetGrasp, self.callback)
         rospy.spin()
 
@@ -117,7 +123,10 @@ class processor:
             depth_raw = resize(
                 depth_raw, (self.size, self.size), preserve_range=True
             ).astype(np.uint16)
-        self.dpub.publish(ros_numpy.msgify(Image, to_u8(depth_raw), encoding="mono8"))
+        if self.publishIntermediateData:
+            self.dpub.publish(
+                ros_numpy.msgify(Image, to_u8(depth_raw), encoding="mono8")
+            )
         rgb = rgb_raw.transpose((2, 0, 1))  # (3,size,size)
         depth = np.expand_dims(depth_raw, 0)  # (1,size,size)
         rgb = normalise(rgb)
@@ -132,15 +141,18 @@ class processor:
 
         # 后处理
         q_img, ang_img, width_img = post_process_output(
-            pred["pos"], pred["cos"], pred["sin"], pred["width"],self.applyGaussian
+            pred["pos"], pred["cos"], pred["sin"], pred["width"], self.applyGaussian
         )
         """尺寸与输入相同,典型区间:
         -0.01~0.96
         -0.90~1.36
         -3.05~60.57"""
-        self.qpub.publish(ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8"))
-        self.apub.publish(ros_numpy.msgify(Image, to_u8(ang_img), encoding="mono8"))
-        self.wpub.publish(ros_numpy.msgify(Image, to_u8(width_img), encoding="mono8"))
+        if self.publishIntermediateData:
+            self.qpub.publish(ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8"))
+            self.apub.publish(ros_numpy.msgify(Image, to_u8(ang_img), encoding="mono8"))
+            self.wpub.publish(
+                ros_numpy.msgify(Image, to_u8(width_img), encoding="mono8")
+            )
         minWidth = width_img.min()
 
         grasps = detect_grasps(q_img, ang_img, width_img, 5)
@@ -154,16 +166,19 @@ class processor:
             )
 
         # 绘制抓取线
-        for g in grasps:
-            line, val = g.draw(minWidth, self.size)
-            # rgb_raw[line] += (
-            #     ((255, 0, 0) - rgb_raw[line]) * np.expand_dims(val, 1)
-            # ).astype(np.uint8)
-            depth_raw[line] += (val * 200).astype(np.uint16)
-            # q_img[line] += val
-        # self.pub.publish(ros_numpy.msgify(Image, rgb_raw, encoding="rgb8"))
-        self.pub.publish(ros_numpy.msgify(Image, to_u8(depth_raw), encoding="mono8"))
-        # self.pub.publish(ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8"))
+        if self.publishVisualisation:
+            for g in grasps:
+                line, val = g.draw(minWidth, self.size)
+                # rgb_raw[line] += (
+                #     ((255, 0, 0) - rgb_raw[line]) * np.expand_dims(val, 1)
+                # ).astype(np.uint8)
+                depth_raw[line] += (val * 200).astype(np.uint16)
+                # q_img[line] += val
+            # self.vpub.publish(ros_numpy.msgify(Image, rgb_raw, encoding="rgb8"))
+            self.vpub.publish(
+                ros_numpy.msgify(Image, to_u8(depth_raw), encoding="mono8")
+            )
+            # self.vpub.publish(ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8"))
 
         # 计算相机坐标系下的坐标
         for g in grasps:
