@@ -14,7 +14,7 @@ from sensor_msgs.msg import Image
 from geometry_msgs.msg import Point
 
 from grcnn.msg import GraspCandidate
-from grcnn.srv import PredictGrasp, PredictGraspResponse
+from grcnn.srv import PredictGrasps, PredictGraspsResponse
 from utils import *
 
 
@@ -84,7 +84,7 @@ class GraspPlanner:
             self.wpub = rospy.Publisher("img_w", Image, queue_size=10)
         if self.pubVis:
             self.vpub = rospy.Publisher("plotted_grabs", Image, queue_size=10)
-        rospy.Service("plan_grasp", PredictGrasp, self.callback)
+        rospy.Service("plan_grasp", PredictGrasps, self.callback)
         rospy.loginfo("抓取规划器就绪")
 
     def crop(self, img, channelFirst=False):
@@ -210,7 +210,7 @@ class GraspPlanner:
                 continue
 
             rospy.loginfo(f"抓取方案: [{pos_x:.3f},{pos_y:.3f},{pos_z:.3f}]")
-            res = PredictGraspResponse()
+            res = PredictGraspsResponse()
             res.grasps = [GraspCandidate(Point(pos_x, pos_y, pos_z), a)]
             return res
 
