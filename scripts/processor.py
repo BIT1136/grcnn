@@ -13,18 +13,16 @@ import ros_numpy
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Point
 
-from grcnn.srv import GetGrasp
+from grcnn.srv import PredictGrasp
 from utils import *
 
 
-class processor:
+class GraspPlanner:
     def __init__(self):
-        rospy.logdebug("加载模型")
+        modelPath = "src/grcnn/models/jac_rgbd_epoch_48_iou_0.93"
+        rospy.logdebug(f"加载模型 {modelPath}")
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.model = torch.load(
-            "/root/grasp/src/grcnn/models/jac_rgbd_epoch_48_iou_0.93",
-            map_location=self.device,
-        )
+        self.model = torch.load(modelPath, map_location=self.device)
         self.model.eval()
 
         intrinsicPath = rospy.get_param(
@@ -84,7 +82,8 @@ class processor:
             self.wpub = rospy.Publisher("img_w", Image, queue_size=10)
         if self.pubVis:
             self.vpub = rospy.Publisher("plotted_grabs", Image, queue_size=10)
-        rospy.Service("plan_grasp", GetGrasp, self.callback)
+        rospy.Service("plan_grasp", PredictGrasp, self.callback)
+        rospy.loginfo("抓取规划器就绪")
 
     def crop(self, img, channelFirst=False):
         if len(img.shape) == 2:
@@ -215,6 +214,6 @@ class processor:
 
 
 if __name__ == "__main__":
-    rospy.init_node("processor")
-    p = processor()
+    rospy.init_node("grasp_planner_2d")
+    p = GraspPlanner()
     rospy.spin()

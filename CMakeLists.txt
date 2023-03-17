@@ -11,7 +11,7 @@ catkin_python_setup()
 
 add_service_files(
   FILES
-  GetGrasp.srv
+  PredictGrasp.srv
 )
 
 generate_messages(
