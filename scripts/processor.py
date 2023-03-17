@@ -13,7 +13,8 @@ import ros_numpy
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Point
 
-from grcnn.srv import PredictGrasp
+from grcnn.msg import GraspCandidate
+from grcnn.srv import PredictGrasp, PredictGraspResponse
 from utils import *
 
 
@@ -25,6 +26,7 @@ class GraspPlanner:
         self.model = torch.load(modelPath, map_location=self.device)
         self.model.eval()
 
+        # TODO 从sensor_msgs.msg.CameraInfo加载内参
         intrinsicPath = rospy.get_param(
             "~intrinsicPath", "src/grcnn/config/ir_camera.yaml"
         )
@@ -208,7 +210,9 @@ class GraspPlanner:
                 continue
 
             rospy.loginfo(f"抓取方案: [{pos_x:.3f},{pos_y:.3f},{pos_z:.3f}]")
-            return (Point(pos_x, pos_y, pos_z), a)
+            res = PredictGraspResponse()
+            res.grasps = [GraspCandidate(Point(pos_x, pos_y, pos_z), a)]
+            return res
 
         raise rospy.ServiceException("无法找到有效的抓取方案")
 

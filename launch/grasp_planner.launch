@@ -1,0 +1,3 @@
+<launch>
+    <node name="process_rgbd" pkg="grcnn" type="processor.py"/>
+</launch>

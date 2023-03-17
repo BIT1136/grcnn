@@ -3,7 +3,7 @@
 
 import rospy
 from sensor_msgs.msg import Image
-from grcnn.srv import GetGrasp
+from grcnn.srv import PredictGrasp
 
 
 if __name__ == "__main__":
@@ -31,7 +31,7 @@ if __name__ == "__main__":
             rospy.logwarn("等待服务超时: %s", e)
             continue
         try:
-            handle = rospy.ServiceProxy("plan_grasp", GetGrasp)
+            handle = rospy.ServiceProxy("plan_grasp", PredictGrasp)
             data = handle(rgb, depth)
             rospy.loginfo("返回的抓取规划:\n%s", data)
         except rospy.ServiceException as e:

@@ -1,0 +1,3 @@
+#抓取位置在相机坐标系中的坐标、竖直旋转角度
+geometry_msgs/Point position
+float64 orientation

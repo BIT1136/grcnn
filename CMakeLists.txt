@@ -9,6 +9,11 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_python_setup()
 
+add_message_files(
+  FILES
+  GraspCandidate.msg
+)
+
 add_service_files(
   FILES
   PredictGrasp.srv
