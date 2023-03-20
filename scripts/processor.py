@@ -25,7 +25,7 @@ class GraspPlanner:
         self.model = torch.load(model_path, map_location=self.device)
         self.model.eval()
 
-        info_topic = rospy.get_param("~info_topic", "/camera/camera_info")
+        info_topic = rospy.get_param("~info_topic", "/d435/camera/depth/camera_info")
         try:
             msg = rospy.wait_for_message(info_topic, CameraInfo, 1)
         except rospy.ROSException as e:
@@ -189,6 +189,8 @@ class GraspPlanner:
                     ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8")
                 )
 
+        predict_grasps = []
+
         # 计算相机坐标系下的坐标
         for g in grasps:
             y = g.center[0]
@@ -203,11 +205,14 @@ class GraspPlanner:
                 continue
 
             rospy.loginfo(f"抓取方案: [{pos_x:.3f},{pos_y:.3f},{pos_z:.3f}]")
-            res = PredictGraspsResponse()
-            res.grasps = [GraspCandidate(Point(pos_x, pos_y, pos_z), a)]
-            return res
+            predict_grasps.append(GraspCandidate(Point(pos_x, pos_y, pos_z), a))
 
-        raise rospy.ServiceException("无法找到有效的抓取方案")
+        if len(predict_grasps) == 0:
+            raise rospy.ServiceException("无法找到有效的抓取方案")
+        
+        res = PredictGraspsResponse()
+        res.grasps = predict_grasps
+        return res
 
 
 if __name__ == "__main__":
