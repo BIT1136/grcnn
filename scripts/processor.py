@@ -1,7 +1,6 @@
 #!/root/mambaforge/envs/grcnn/bin/python
 
 import time
-import yaml
 
 import torch
 import numpy as np
@@ -10,7 +9,7 @@ from skimage.transform import resize
 
 import rospy
 import ros_numpy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import Point
 
 from grcnn.msg import GraspCandidate
@@ -26,22 +25,17 @@ class GraspPlanner:
         self.model = torch.load(model_path, map_location=self.device)
         self.model.eval()
 
-        # TODO 从sensor_msgs.msg.CameraInfo加载内参
-        intrinsic_path = rospy.get_param(
-            "~intrinsicPath", "src/grcnn/config/ir_camera.yaml"
-        )
-        with open(intrinsic_path, "r", encoding="utf-8") as f:
-            config = yaml.load(f, yaml.FullLoader)
-        intrinsic = config["camera_matrix"]["data"]
-        intrinsic = np.array(intrinsic).reshape(3, 3)
-        # 相机内参
-        self.cx = intrinsic[0, 2]
-        self.cy = intrinsic[1, 2]
-        self.fx = intrinsic[0, 0]
-        self.fy = intrinsic[1, 1]
+        info_topic = rospy.get_param("~info_topic", "/camera/camera_info")
+        try:
+            msg = rospy.wait_for_message(info_topic, CameraInfo, 1)
+        except rospy.ROSException as e:
+            rospy.logwarn(e)
+            exit()
+        self.fx, self.fy, self.cx, self.cy = msg.K[0], msg.K[4], msg.K[2], msg.K[5]
+
         # 深度图微调参数
-        self.depth_scale = rospy.get_param("~depthScale", 1)
-        self.depth_bias = rospy.get_param("~depthBias", 0)
+        self.depth_scale = rospy.get_param("~depth_scale", 1)
+        self.depth_bias = rospy.get_param("~depth_bias", 0)
         rospy.logdebug(
             "cx=%s, cy=%s, fx=%s, fy=%s, ds=%s, db=%s",
             self.cx,
@@ -52,9 +46,8 @@ class GraspPlanner:
             self.depth_bias,
         )
 
-        width = config["image_width"]
-        height = config["image_height"]
-        self.use_crop = rospy.get_param("~useCrop", False)
+        width, height = msg.width, msg.height
+        self.use_crop = rospy.get_param("~use_crop", False)
         """裁剪图像至目标尺寸，否则将图像压缩至目标尺寸"""
         size = 300
         self.size = size
@@ -65,16 +58,16 @@ class GraspPlanner:
         self.bottom_right = (bottom, right)
         self.top_left = (top, left)
 
-        self.zero_depth_policy = rospy.get_param("~zeroDepthPolicy", "mean")
+        self.zero_depth_policy = rospy.get_param("~zero_depth_policy", "mean")
         """mean:将0值替换为深度图其他值的均值
         mode:将0值替换为深度图其他值的众数"""
-        self.apply_gaussian = rospy.get_param("~applyGaussian", True)
+        self.apply_gaussian = rospy.get_param("~apply_gaussian", True)
         """是否对网络输出进行高斯滤波"""
-        self.pub_inter_data = rospy.get_param("~pubInterData", True)
+        self.pub_inter_data = rospy.get_param("~pub_inter_data", True)
         """是否发布修复的深度图和原始网络输出"""
-        self.pub_vis = rospy.get_param("~pubVis", True)
+        self.pub_vis = rospy.get_param("~pub_vis", True)
         """是否发布绘制的抓取结果"""
-        self.vis_type = rospy.get_param("~visType", "depth")
+        self.vis_type = rospy.get_param("~vis_type", "depth")
         """抓取结果绘制在何种图像上,depth:深度图,rgb:rgb图,q:预测的抓取质量图"""
 
         if self.pub_inter_data:
