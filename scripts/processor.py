@@ -20,17 +20,17 @@ from utils import *
 
 class GraspPlanner:
     def __init__(self):
-        modelPath = "src/grcnn/models/jac_rgbd_epoch_48_iou_0.93"
-        rospy.logdebug(f"加载模型 {modelPath}")
+        model_path = "src/grcnn/models/jac_rgbd_epoch_48_iou_0.93"
+        rospy.logdebug(f"加载模型 {model_path}")
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.model = torch.load(modelPath, map_location=self.device)
+        self.model = torch.load(model_path, map_location=self.device)
         self.model.eval()
 
         # TODO 从sensor_msgs.msg.CameraInfo加载内参
-        intrinsicPath = rospy.get_param(
+        intrinsic_path = rospy.get_param(
             "~intrinsicPath", "src/grcnn/config/ir_camera.yaml"
         )
-        with open(intrinsicPath, "r", encoding="utf-8") as f:
+        with open(intrinsic_path, "r", encoding="utf-8") as f:
             config = yaml.load(f, yaml.FullLoader)
         intrinsic = config["camera_matrix"]["data"]
         intrinsic = np.array(intrinsic).reshape(3, 3)
@@ -40,21 +40,21 @@ class GraspPlanner:
         self.fx = intrinsic[0, 0]
         self.fy = intrinsic[1, 1]
         # 深度图微调参数
-        self.depthScale = rospy.get_param("~depthScale", 1)
-        self.depthBias = rospy.get_param("~depthBias", 0)
+        self.depth_scale = rospy.get_param("~depthScale", 1)
+        self.depth_bias = rospy.get_param("~depthBias", 0)
         rospy.logdebug(
             "cx=%s, cy=%s, fx=%s, fy=%s, ds=%s, db=%s",
             self.cx,
             self.cy,
             self.fx,
             self.fy,
-            self.depthScale,
-            self.depthBias,
+            self.depth_scale,
+            self.depth_bias,
         )
 
         width = config["image_width"]
         height = config["image_height"]
-        self.useCrop = rospy.get_param("~useCrop", False)
+        self.use_crop = rospy.get_param("~useCrop", False)
         """裁剪图像至目标尺寸，否则将图像压缩至目标尺寸"""
         size = 300
         self.size = size
@@ -65,35 +65,35 @@ class GraspPlanner:
         self.bottom_right = (bottom, right)
         self.top_left = (top, left)
 
-        self.zeroDepthPolicy = rospy.get_param("~zeroDepthPolicy", "mean")
+        self.zero_depth_policy = rospy.get_param("~zeroDepthPolicy", "mean")
         """mean:将0值替换为深度图其他值的均值
         mode:将0值替换为深度图其他值的众数"""
-        self.applyGaussian = rospy.get_param("~applyGaussian", True)
+        self.apply_gaussian = rospy.get_param("~applyGaussian", True)
         """是否对网络输出进行高斯滤波"""
-        self.pubInterData = rospy.get_param("~pubInterData", True)
+        self.pub_inter_data = rospy.get_param("~pubInterData", True)
         """是否发布修复的深度图和原始网络输出"""
-        self.pubVis = rospy.get_param("~pubVis", True)
+        self.pub_vis = rospy.get_param("~pubVis", True)
         """是否发布绘制的抓取结果"""
-        self.visType = rospy.get_param("~visType", "depth")
+        self.vis_type = rospy.get_param("~visType", "depth")
         """抓取结果绘制在何种图像上,depth:深度图,rgb:rgb图,q:预测的抓取质量图"""
 
-        if self.pubInterData:
+        if self.pub_inter_data:
             self.dpub = rospy.Publisher("fixed_depth", Image, queue_size=10)
             self.qpub = rospy.Publisher("img_q", Image, queue_size=10)
             self.apub = rospy.Publisher("img_a", Image, queue_size=10)
             self.wpub = rospy.Publisher("img_w", Image, queue_size=10)
-        if self.pubVis:
+        if self.pub_vis:
             self.vpub = rospy.Publisher("plotted_grabs", Image, queue_size=10)
         rospy.Service("plan_grasp", PredictGrasps, self.callback)
         rospy.loginfo("抓取规划器就绪")
 
-    def crop(self, img, channelFirst=False):
+    def crop(self, img, channel_first=False):
         if len(img.shape) == 2:
             return img[
                 self.top_left[0] : self.bottom_right[0],
                 self.top_left[1] : self.bottom_right[1],
             ]
-        elif len(img.shape) == 3 and channelFirst:
+        elif len(img.shape) == 3 and channel_first:
             return img[
                 :,
                 self.top_left[0] : self.bottom_right[0],
@@ -115,15 +115,15 @@ class GraspPlanner:
         # 获取并预处理图像
         rgb_raw: np.ndarray = ros_numpy.numpify(data.rgb)  # (480, 640, 3) uint8
         depth_raw: np.ndarray = ros_numpy.numpify(data.depth)  # (480, 640) uint16 单位为毫米
-        if self.zeroDepthPolicy == "mean":
-            meanVal = depth_raw[depth_raw != 0].mean()
-            rospy.logdebug(f"使用平均数 = {meanVal} 替换深度图中的0值")
-            depth_raw[depth_raw == 0] = meanVal
-        elif self.zeroDepthPolicy == "mode":
-            modeVal = mode(depth_raw[depth_raw != 0], axis=None, keepdims=False)[0]
-            rospy.logdebug(f"使用众数 = {modeVal} 替换深度图中的0值")
-            depth_raw[depth_raw == 0] = modeVal
-        if self.useCrop:
+        if self.zero_depth_policy == "mean":
+            mean_val = depth_raw[depth_raw != 0].mean()
+            rospy.logdebug(f"使用平均数 = {mean_val} 替换深度图中的0值")
+            depth_raw[depth_raw == 0] = mean_val
+        elif self.zero_depth_policy == "mode":
+            mode_val = mode(depth_raw[depth_raw != 0], axis=None, keepdims=False)[0]
+            rospy.logdebug(f"使用众数 = {mode_val} 替换深度图中的0值")
+            depth_raw[depth_raw == 0] = mode_val
+        if self.use_crop:
             rgb_raw = self.crop(rgb_raw)
             depth_raw = self.crop(depth_raw)
         else:
@@ -133,7 +133,7 @@ class GraspPlanner:
             depth_raw = resize(
                 depth_raw, (self.size, self.size), preserve_range=True
             ).astype(np.uint16)
-        if self.pubInterData:
+        if self.pub_inter_data:
             self.dpub.publish(
                 ros_numpy.msgify(Image, to_u8(depth_raw), encoding="mono8")
             )
@@ -151,19 +151,19 @@ class GraspPlanner:
 
         # 后处理
         q_img, ang_img, width_img = post_process_output(
-            pred["pos"], pred["cos"], pred["sin"], pred["width"], self.applyGaussian
+            pred["pos"], pred["cos"], pred["sin"], pred["width"], self.apply_gaussian
         )
         """尺寸与输入相同,典型区间:
         -0.01~0.96
         -0.90~1.36
         -3.05~60.57"""
-        if self.pubInterData:
+        if self.pub_inter_data:
             self.qpub.publish(ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8"))
             self.apub.publish(ros_numpy.msgify(Image, to_u8(ang_img), encoding="mono8"))
             self.wpub.publish(
                 ros_numpy.msgify(Image, to_u8(width_img), encoding="mono8")
             )
-        minWidth = width_img.min()
+        min_width = width_img.min() if width_img.min() < 0 else 0
 
         grasps = detect_grasps(q_img, ang_img, width_img, 5)
         t_end = time.perf_counter()
@@ -174,24 +174,24 @@ class GraspPlanner:
             rospy.loginfo(f"检测到 {len(grasps)} 个抓取候选: {[str(g) for g in grasps]}")
 
         # 绘制抓取线
-        if self.pubVis:
+        if self.pub_vis:
             for g in grasps:
-                line, val = g.draw(minWidth, self.size)
-                if self.visType == "rgb":
+                line, val = g.draw(min_width, self.size)
+                if self.vis_type == "rgb":
                     rgb_raw[line] += (
                         ((255, 0, 0) - rgb_raw[line]) * np.expand_dims(val, 1)
                     ).astype(np.uint8)
-                elif self.visType == "depth":
+                elif self.vis_type == "depth":
                     depth_raw[line] += (val * 200).astype(np.uint16)
-                elif self.visType == "q":
+                elif self.vis_type == "q":
                     q_img[line] += val
-            if self.visType == "rgb":
+            if self.vis_type == "rgb":
                 self.vpub.publish(ros_numpy.msgify(Image, rgb_raw, encoding="rgb8"))
-            elif self.visType == "depth":
+            elif self.vis_type == "depth":
                 self.vpub.publish(
                     ros_numpy.msgify(Image, to_u8(depth_raw), encoding="mono8")
                 )
-            elif self.visType == "q":
+            elif self.vis_type == "q":
                 self.vpub.publish(
                     ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8")
                 )
@@ -201,7 +201,7 @@ class GraspPlanner:
             y = g.center[0]
             x = g.center[1]
             a = g.angle
-            pos_z = depth_raw[x + 0, y + 0] * self.depthScale + self.depthBias
+            pos_z = depth_raw[x + 0, y + 0] * self.depth_scale + self.depth_bias
             pos_x = np.multiply(x - self.cx, pos_z / self.fx)
             pos_y = np.multiply(y - self.cy, pos_z / self.fy)
 
