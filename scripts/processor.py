@@ -49,7 +49,7 @@ class GraspPlanner:
         width, height = msg.width, msg.height
         self.use_crop = rospy.get_param("~use_crop", False)
         """裁剪图像至目标尺寸，否则将图像压缩至目标尺寸"""
-        size = 300
+        size = 300  # 当前网络只接收这一尺寸的输入
         self.size = size
         left = (width - size) // 2
         top = (height - size) // 2
@@ -57,7 +57,11 @@ class GraspPlanner:
         bottom = (height + size) // 2
         self.bottom_right = (bottom, right)
         self.top_left = (top, left)
+        self.y_scale = size / height
+        self.x_scale = size / width
 
+        self.output_meter = rospy.get_param("~output_matric", True)
+        """设置输出单位为米,否则为毫米"""
         self.zero_depth_policy = rospy.get_param("~zero_depth_policy", "mean")
         """mean:将0值替换为深度图其他值的均值
         mode:将0值替换为深度图其他值的众数"""
@@ -67,7 +71,7 @@ class GraspPlanner:
         """是否发布修复的深度图和原始网络输出"""
         self.pub_vis = rospy.get_param("~pub_vis", True)
         """是否发布绘制的抓取结果"""
-        self.vis_type = rospy.get_param("~vis_type", "depth")
+        self.vis_type = rospy.get_param("~vis_type", "rgb")
         """抓取结果绘制在何种图像上,depth:深度图,rgb:rgb图,q:预测的抓取质量图"""
 
         if self.pub_inter_data:
@@ -108,6 +112,7 @@ class GraspPlanner:
         # 获取并预处理图像
         rgb_raw: np.ndarray = ros_numpy.numpify(data.rgb)  # (480, 640, 3) uint8
         depth_raw: np.ndarray = ros_numpy.numpify(data.depth)  # (480, 640) uint16 单位为毫米
+        np.savetxt("depth_raw.txt", depth_raw,fmt="%d")
         if self.zero_depth_policy == "mean":
             mean_val = depth_raw[depth_raw != 0].mean()
             rospy.logdebug(f"使用平均数 = {mean_val} 替换深度图中的0值")
@@ -116,6 +121,7 @@ class GraspPlanner:
             mode_val = mode(depth_raw[depth_raw != 0], axis=None, keepdims=False)[0]
             rospy.logdebug(f"使用众数 = {mode_val} 替换深度图中的0值")
             depth_raw[depth_raw == 0] = mode_val
+        desktop_depth=mode(depth_raw, axis=None, keepdims=False)[0]
         if self.use_crop:
             rgb_raw = self.crop(rgb_raw)
             depth_raw = self.crop(depth_raw)
@@ -175,7 +181,11 @@ class GraspPlanner:
                         ((255, 0, 0) - rgb_raw[line]) * np.expand_dims(val, 1)
                     ).astype(np.uint8)
                 elif self.vis_type == "depth":
-                    depth_raw[line] += (val * 200).astype(np.uint16)
+                    y = g.center[0]
+                    x = g.center[1]
+                    print(depth_raw[y-1:y+1,x-1:x+1])
+                    depth_raw[y-1:y+1,x-1:x+1] = 0
+                    # depth_raw[line] += (val * 200).astype(np.uint16)
                 elif self.vis_type == "q":
                     q_img[line] += val
             if self.vis_type == "rgb":
@@ -189,27 +199,35 @@ class GraspPlanner:
                     ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8")
                 )
 
-        predict_grasps = []
-
         # 计算相机坐标系下的坐标
+        predict_grasps = []
         for g in grasps:
             y = g.center[0]
             x = g.center[1]
             a = g.angle
-            pos_z = depth_raw[x + 0, y + 0] * self.depth_scale + self.depth_bias
-            pos_x = np.multiply(x - self.cx, pos_z / self.fx)
-            pos_y = np.multiply(y - self.cy, pos_z / self.fy)
+            pos_z = depth_raw[y, x] * self.depth_scale + self.depth_bias
+            pos_z=(pos_z+desktop_depth)/2
+            if not self.use_crop:
+                y=y/self.y_scale
+                x=x/self.x_scale
+            pos_x = -(x - self.cx) * (pos_z / self.fx)
+            pos_y = -(y - self.cy) * (pos_z / self.fy)
 
             if pos_z < 200:
-                rospy.logwarn(f"深度值过小: {pos_z:.3f},丢弃")
+                rospy.logwarn(f"深度值过小: {pos_z:.3f}mm, 丢弃")
                 continue
 
-            rospy.loginfo(f"抓取方案: [{pos_x:.3f},{pos_y:.3f},{pos_z:.3f}]")
-            predict_grasps.append(GraspCandidate(Point(pos_x, pos_y, pos_z), a))
+            if self.output_meter:
+                pos_z = pos_z / 1000
+                pos_x = pos_x / 1000
+                pos_y = pos_y / 1000
+
+            rospy.loginfo(f"抓取方案: [{pos_x:.3f},{pos_y:.3f},{pos_z:.3f}], {a:.3f}")
+            predict_grasps.append(GraspCandidate(Point(pos_x, pos_y, pos_z), -a))
 
         if len(predict_grasps) == 0:
             raise rospy.ServiceException("无法找到有效的抓取方案")
-        
+
         res = PredictGraspsResponse()
         res.grasps = predict_grasps
         return res
