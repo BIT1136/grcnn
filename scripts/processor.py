@@ -29,8 +29,11 @@ class GraspPlanner:
         try:
             msg = rospy.wait_for_message(info_topic, CameraInfo, 1)
         except rospy.ROSException as e:
-            rospy.logwarn(e)
-            exit()
+            msg=CameraInfo()
+            msg.K=[554.3826904296875, 0.0, 320.0, 0.0, 554.3826904296875, 240.0, 0.0, 0.0, 1.0]
+            msg.width,msg.height=640,480
+            rospy.logwarn(f"{e}, 使用默认相机参数")
+            # exit()
         self.fx, self.fy, self.cx, self.cy = msg.K[0], msg.K[4], msg.K[2], msg.K[5]
 
         # 深度图微调参数
