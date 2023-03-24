@@ -65,9 +65,9 @@ class GraspPlanner:
 
         self.output_meter = rospy.get_param("~output_matric", True)
         """设置输出单位为米,否则为毫米"""
-        self.zero_depth_policy = rospy.get_param("~zero_depth_policy", "mean")
-        """mean:将0值替换为深度图其他值的均值
-        mode:将0值替换为深度图其他值的众数"""
+        self.invalid_depth_policy = rospy.get_param("~zero_depth_policy", "mean")
+        """mean:将无效值替换为深度图其他值的均值
+        mode:将无效值替换为深度图其他值的众数"""
         self.apply_gaussian = rospy.get_param("~apply_gaussian", True)
         """是否对网络输出进行高斯滤波"""
         self.pub_inter_data = rospy.get_param("~pub_inter_data", True)
@@ -116,14 +116,16 @@ class GraspPlanner:
         rgb_raw: np.ndarray = ros_numpy.numpify(data.rgb)  # (480, 640, 3) uint8
         depth_raw: np.ndarray = ros_numpy.numpify(data.depth)  # (480, 640) uint16 单位为毫米
         np.savetxt("depth_raw.txt", depth_raw,fmt="%d")
-        if self.zero_depth_policy == "mean":
-            mean_val = depth_raw[depth_raw != 0].mean()
-            rospy.logdebug(f"使用平均数 = {mean_val} 替换深度图中的0值")
-            depth_raw[depth_raw == 0] = mean_val
-        elif self.zero_depth_policy == "mode":
-            mode_val = mode(depth_raw[depth_raw != 0], axis=None, keepdims=False)[0]
-            rospy.logdebug(f"使用众数 = {mode_val} 替换深度图中的0值")
-            depth_raw[depth_raw == 0] = mode_val
+        valid_mask=(depth_raw != 0) & (depth_raw<1000)
+        invalid_mask=(depth_raw == 0) | (depth_raw>1000)
+        if self.invalid_depth_policy == "mean":
+            mean_val = depth_raw[valid_mask].mean()
+            rospy.logdebug(f"使用平均数 {mean_val} 替换深度图中的 {invalid_mask.sum()} 个无效值")
+            depth_raw[invalid_mask] = mean_val
+        elif self.invalid_depth_policy == "mode":
+            mode_val = mode(depth_raw[valid_mask], axis=None, keepdims=False)[0]
+            rospy.logdebug(f"使用众数 {mode_val} 替换深度图中的 {invalid_mask.sum()} 个无效值")
+            depth_raw[invalid_mask] = mode_val
         desktop_depth=mode(depth_raw, axis=None, keepdims=False)[0]
         if self.use_crop:
             rgb_raw = self.crop(rgb_raw)

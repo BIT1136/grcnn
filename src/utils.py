@@ -50,7 +50,7 @@ class Grasp:
 
 def detect_grasps(q_img, ang_img, width_img, num_grasps=1) -> list[Grasp]:
     local_max = peak_local_max(
-        q_img, min_distance=15, threshold_abs=0.5, num_peaks=num_grasps
+        q_img, min_distance=50, threshold_abs=0.5, num_peaks=num_grasps
     )
 
     grasps = []
