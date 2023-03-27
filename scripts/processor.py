@@ -4,8 +4,8 @@ import time
 
 import torch
 import numpy as np
-from scipy.stats import mode
-from skimage.transform import resize
+from scipy import stats
+from skimage import measure,transform
 
 import rospy
 import ros_numpy
@@ -17,6 +17,7 @@ from grcnn.srv import PredictGrasps, PredictGraspsResponse
 from utils import *
 
 
+# TODO 重构:抽取推理部分到src中的类
 class GraspPlanner:
     def __init__(self):
         model_path = "src/grcnn/models/jac_rgbd_epoch_48_iou_0.93"
@@ -65,7 +66,7 @@ class GraspPlanner:
 
         self.output_meter = rospy.get_param("~output_matric", True)
         """设置输出单位为米,否则为毫米"""
-        self.invalid_depth_policy = rospy.get_param("~zero_depth_policy", "mean")
+        self.invalid_depth_policy = rospy.get_param("~invalid_depth_policy", "mean")
         """mean:将无效值替换为深度图其他值的均值
         mode:将无效值替换为深度图其他值的众数"""
         self.apply_gaussian = rospy.get_param("~apply_gaussian", True)
@@ -107,6 +108,9 @@ class GraspPlanner:
             ]
         else:
             raise NotImplementedError
+        
+    def centroid_scale(self,x, y):
+        return 1-0.01*np.sqrt((x[0]-y[0])**2 + (x[1]-y[1])**2)
 
     def callback(self, data):
         rospy.loginfo("开始推理")
@@ -123,18 +127,33 @@ class GraspPlanner:
             rospy.logdebug(f"使用平均数 {mean_val} 替换深度图中的 {invalid_mask.sum()} 个无效值")
             depth_raw[invalid_mask] = mean_val
         elif self.invalid_depth_policy == "mode":
-            mode_val = mode(depth_raw[valid_mask], axis=None, keepdims=False)[0]
+            mode_val = stats.mode(depth_raw[valid_mask], axis=None, keepdims=False)[0]
             rospy.logdebug(f"使用众数 {mode_val} 替换深度图中的 {invalid_mask.sum()} 个无效值")
             depth_raw[invalid_mask] = mode_val
-        desktop_depth=mode(depth_raw, axis=None, keepdims=False)[0]
+        # TODO use nearest depth value as desktop_depth
+        desktop_depth=stats.mode(depth_raw, axis=None, keepdims=False)[0]
+        # TODO get seg
+        instances=[]
+        classify=[]
+        label_img=np.ndarray((self.size,self.size),dtype=np.int32)#0为背景,数字为实例编号
+        props=measure.regionprops_table(label_img,properties=('centroid'))
+        centroids=props['centroid']#centroids[i]为第i+1个实例的重心坐标
+        # TODO generate scale_img
+        scale_img=np.zeros((self.size,self.size))
+        # pseudo code:
+        for i in instances:
+            indices = np.where(label_img == i.idx)
+            for y,x in zip(indices[0], indices[1]):
+                scale_img[y,x] = self.centroid_scale((y,x), centroids[i-1])
+        # TODO crop or resize label_img and scale_img
         if self.use_crop:
             rgb_raw = self.crop(rgb_raw)
             depth_raw = self.crop(depth_raw)
         else:
-            rgb_raw = resize(
+            rgb_raw = transform.resize(
                 rgb_raw, (self.size, self.size, 3), preserve_range=True
             ).astype(np.uint8)
-            depth_raw = resize(
+            depth_raw = transform.resize(
                 depth_raw, (self.size, self.size), preserve_range=True
             ).astype(np.uint16)
         if self.pub_inter_data:
@@ -161,6 +180,7 @@ class GraspPlanner:
         -0.01~0.96
         -0.90~1.36
         -3.05~60.57"""
+        q_img*=scale_img
         if self.pub_inter_data:
             self.qpub.publish(ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8"))
             self.apub.publish(ros_numpy.msgify(Image, to_u8(ang_img), encoding="mono8"))
@@ -168,8 +188,7 @@ class GraspPlanner:
                 ros_numpy.msgify(Image, to_u8(width_img), encoding="mono8")
             )
         min_width = width_img.min() if width_img.min() < 0 else 0
-
-        grasps = detect_grasps(q_img, ang_img, width_img, 5)
+        grasps = detect_grasps(q_img, ang_img, width_img, 5,label_img)
         t_end = time.perf_counter()
         rospy.loginfo(f"推理完成,耗时: {(t_end - t_start)*1000:.2f}ms")
         if len(grasps) == 0:

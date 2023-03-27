@@ -5,6 +5,7 @@ from skimage.draw import line_aa
 from skimage.filters import gaussian
 from skimage.feature import peak_local_max
 
+# TODO 重构:函数移动到抓取检测类中
 
 def post_process_output(q_img, cos_img, sin_img, width_img, apply_gaussian=True):
     q_img = q_img.cpu().numpy().squeeze()
@@ -48,9 +49,9 @@ class Grasp:
         return line, val[mask]
 
 
-def detect_grasps(q_img, ang_img, width_img, num_grasps=1) -> list[Grasp]:
+def detect_grasps(q_img, ang_img, width_img, num_grasps=1,label_img=None) -> list[Grasp]:
     local_max = peak_local_max(
-        q_img, min_distance=50, threshold_abs=0.5, num_peaks=num_grasps
+        q_img, min_distance=50, threshold_abs=0.5, num_peaks=num_grasps,labels=label_img
     )
 
     grasps = []
