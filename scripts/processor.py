@@ -1,11 +1,12 @@
 #!/root/mambaforge/envs/grcnn/bin/python
 
 import time
+import math
 
 import torch
 import numpy as np
 from scipy import stats
-from skimage import measure,transform
+from skimage import measure, morphology, transform, feature, filters, color,draw
 
 import rospy
 import ros_numpy
@@ -14,10 +15,10 @@ from geometry_msgs.msg import Point
 
 from grcnn.msg import GraspCandidate
 from grcnn.srv import PredictGrasps, PredictGraspsResponse
-from utils import *
+from grasp import Grasp
 
 
-# TODO 重构:抽取推理部分到src中的类
+# TODO 重构:抽取推理部分到src中的类,方便脱离ROS使用
 class GraspPlanner:
     def __init__(self):
         model_path = "src/grcnn/models/jac_rgbd_epoch_48_iou_0.93"
@@ -26,15 +27,32 @@ class GraspPlanner:
         self.model = torch.load(model_path, map_location=self.device)
         self.model.eval()
 
+        self.apply_seg = rospy.get_param("~apply_seg", True)
+        """是否使用额外的实例分割网络以增强效果"""
+        self.apply_line_detect = rospy.get_param("~apply_line_detect", True)
+        """是否检测直线以增强效果.针对矩形物体抓取方向不正确做出的修正,某些情况下可能增加误判.apply_seg需为True"""
+        self.angle_policy = rospy.get_param("~angle_policy", "strict")
+        """strict:将推理出的抓取角度改为最接近的直线角度
+        neighborhood:将直线角度一个邻域内的抓取角度改为直线角度"""
+
         info_topic = rospy.get_param("~info_topic", "/d435/camera/depth/camera_info")
         try:
-            msg = rospy.wait_for_message(info_topic, CameraInfo, 1)
+            msg: CameraInfo = rospy.wait_for_message(info_topic, CameraInfo, 1)
         except rospy.ROSException as e:
-            msg=CameraInfo()
-            msg.K=[554.3826904296875, 0.0, 320.0, 0.0, 554.3826904296875, 240.0, 0.0, 0.0, 1.0]
-            msg.width,msg.height=640,480
+            msg = CameraInfo()
+            msg.K = [
+                554.3826904296875,
+                0.0,
+                320.0,
+                0.0,
+                554.3826904296875,
+                240.0,
+                0.0,
+                0.0,
+                1.0,
+            ]
+            msg.width, msg.height = 640, 480
             rospy.logwarn(f"{e}, 使用默认相机参数")
-            # exit()
         self.fx, self.fy, self.cx, self.cy = msg.K[0], msg.K[4], msg.K[2], msg.K[5]
 
         # 深度图微调参数
@@ -79,6 +97,9 @@ class GraspPlanner:
         """抓取结果绘制在何种图像上,depth:深度图,rgb:rgb图,q:预测的抓取质量图"""
 
         if self.pub_inter_data:
+            if self.apply_seg:
+                self.labelpub = rospy.Publisher("img_label", Image, queue_size=10)
+                self.linepub = rospy.Publisher("img_line", Image, queue_size=10)
             self.dpub = rospy.Publisher("fixed_depth", Image, queue_size=10)
             self.qpub = rospy.Publisher("img_q", Image, queue_size=10)
             self.apub = rospy.Publisher("img_a", Image, queue_size=10)
@@ -88,29 +109,103 @@ class GraspPlanner:
         rospy.Service("plan_grasp", PredictGrasps, self.callback)
         rospy.loginfo("抓取规划器就绪")
 
-    def crop(self, img, channel_first=False):
-        if len(img.shape) == 2:
-            return img[
-                self.top_left[0] : self.bottom_right[0],
-                self.top_left[1] : self.bottom_right[1],
-            ]
-        elif len(img.shape) == 3 and channel_first:
-            return img[
-                :,
-                self.top_left[0] : self.bottom_right[0],
-                self.top_left[1] : self.bottom_right[1],
-            ]
-        elif len(img.shape) == 3:
-            return img[
-                self.top_left[0] : self.bottom_right[0],
-                self.top_left[1] : self.bottom_right[1],
-                :,
-            ]
+    def resize(self, img, channel_first=False):
+        if self.use_crop:
+            if len(img.shape) == 2:
+                return img[
+                    self.top_left[0] : self.bottom_right[0],
+                    self.top_left[1] : self.bottom_right[1],
+                ]
+            elif len(img.shape) == 3 and channel_first:
+                return img[
+                    :,
+                    self.top_left[0] : self.bottom_right[0],
+                    self.top_left[1] : self.bottom_right[1],
+                ]
+            elif len(img.shape) == 3:
+                return img[
+                    self.top_left[0] : self.bottom_right[0],
+                    self.top_left[1] : self.bottom_right[1],
+                    :,
+                ]
+            else:
+                raise NotImplementedError
         else:
-            raise NotImplementedError
+            dtype = img.dtype
+            if len(img.shape) == 2:
+                return transform.resize(
+                    img, (self.size, self.size), preserve_range=True
+                ).astype(dtype)
+            elif len(img.shape) == 3 and channel_first:
+                return transform.resize(
+                    img, (3, self.size, self.size), preserve_range=True
+                ).astype(dtype)
+            elif len(img.shape) == 3:
+                return transform.resize(
+                    img, (self.size, self.size, 3), preserve_range=True
+                ).astype(dtype)
+            else:
+                raise NotImplementedError
+
+    def centroid_scale(self, x, y):
+        return 1 - 0.01 * np.sqrt((x[0] - y[0]) ** 2 + (x[1] - y[1]) ** 2)
+
+    def to_u8(self, array: np.ndarray, max=255):
+        array = array - array.min()
+        return (array * (max / array.max())).astype(np.uint8)
+
+    def normalise(self, img: np.ndarray, factor=255):
+        img = img.astype(np.float32) / factor
+        return np.clip(img - img.mean(), -1, 1)
+
+    def post_process_output(
+        self, q_img, cos_img, sin_img, width_img, apply_gaussian=True
+    ):
+        q_img = q_img.cpu().numpy().squeeze()
+        ang_img = (torch.atan2(sin_img, cos_img) / 2.0).cpu().numpy().squeeze()
+        width_img = width_img.cpu().numpy().squeeze() * 100.0
+        if apply_gaussian:
+            q_img = filters.gaussian(q_img, 2.0, preserve_range=True)
+            ang_img = filters.gaussian(ang_img, 2.0, preserve_range=True)
+            width_img = filters.gaussian(width_img, 1.0, preserve_range=True)
+        return q_img, ang_img, width_img
+
+    def detect_grasps(
+        self, q_img, ang_img, width_img, num_grasps=1, label_img=None,lines_angle=[]
+    ) -> list[Grasp]:
+        if label_img is not None:
+            local_max = feature.peak_local_max(
+                q_img,
+                min_distance=50,
+                threshold_abs=0.5,
+                num_peaks=num_grasps,
+                labels=label_img,
+            )
+        else:
+            local_max = feature.peak_local_max(
+                q_img,
+                min_distance=50,
+                threshold_abs=0.5,
+                num_peaks=num_grasps
+            )
         
-    def centroid_scale(self,x, y):
-        return 1-0.01*np.sqrt((x[0]-y[0])**2 + (x[1]-y[1])**2)
+        grasps = []
+        for grasp_point_array in local_max:
+            grasp_point = tuple(grasp_point_array)
+            grasp_angle = ang_img[grasp_point]
+            grasp_width = width_img[grasp_point]
+            if label_img is not None:
+                inst=label_img[grasp_point]
+                if lines_angle:
+                    diff = np.abs(np.array(lines_angle[inst]) - grasp_angle)
+                    min_index = np.argmin(diff)
+                    if self.angle_policy=="strict":
+                        grasp_angle=lines_angle[inst][min_index]
+                    elif self.angle_policy=="neighborhood" and diff[min_index]<np.pi/8:
+                        grasp_angle=lines_angle[inst][min_index]
+            g = Grasp(grasp_point, grasp_angle, grasp_width)
+            grasps.append(g)
+        return grasps
 
     def callback(self, data):
         rospy.loginfo("开始推理")
@@ -119,9 +214,9 @@ class GraspPlanner:
         # 获取并预处理图像
         rgb_raw: np.ndarray = ros_numpy.numpify(data.rgb)  # (480, 640, 3) uint8
         depth_raw: np.ndarray = ros_numpy.numpify(data.depth)  # (480, 640) uint16 单位为毫米
-        np.savetxt("depth_raw.txt", depth_raw,fmt="%d")
-        valid_mask=(depth_raw != 0) & (depth_raw<1000)
-        invalid_mask=(depth_raw == 0) | (depth_raw>1000)
+        np.savetxt("depth_raw.txt", depth_raw, fmt="%d")
+        valid_mask = (depth_raw != 0) & (depth_raw < 1000)
+        invalid_mask = (depth_raw == 0) | (depth_raw > 1000)
         if self.invalid_depth_policy == "mean":
             mean_val = depth_raw[valid_mask].mean()
             rospy.logdebug(f"使用平均数 {mean_val} 替换深度图中的 {invalid_mask.sum()} 个无效值")
@@ -131,64 +226,125 @@ class GraspPlanner:
             rospy.logdebug(f"使用众数 {mode_val} 替换深度图中的 {invalid_mask.sum()} 个无效值")
             depth_raw[invalid_mask] = mode_val
         # TODO use nearest depth value as desktop_depth
-        desktop_depth=stats.mode(depth_raw, axis=None, keepdims=False)[0]
-        # TODO get seg
-        instances=[]
-        classify=[]
-        label_img=np.ndarray((self.size,self.size),dtype=np.int32)#0为背景,数字为实例编号
-        props=measure.regionprops_table(label_img,properties=('centroid'))
-        centroids=props['centroid']#centroids[i]为第i+1个实例的重心坐标
-        # TODO generate scale_img
-        scale_img=np.zeros((self.size,self.size))
-        # pseudo code:
-        for i in instances:
-            indices = np.where(label_img == i.idx)
-            for y,x in zip(indices[0], indices[1]):
-                scale_img[y,x] = self.centroid_scale((y,x), centroids[i-1])
-        # TODO crop or resize label_img and scale_img
-        if self.use_crop:
-            rgb_raw = self.crop(rgb_raw)
-            depth_raw = self.crop(depth_raw)
-        else:
-            rgb_raw = transform.resize(
-                rgb_raw, (self.size, self.size, 3), preserve_range=True
-            ).astype(np.uint8)
-            depth_raw = transform.resize(
-                depth_raw, (self.size, self.size), preserve_range=True
-            ).astype(np.uint16)
+        desktop_depth = stats.mode(depth_raw, axis=None, keepdims=False)[0]
+
+        # 处理实例分割
+        label_mask = None
+        l_img = np.zeros(list(depth_raw.shape) + [3], dtype=np.uint8)  # 彩色标签显示
+        scale_img = np.zeros_like(depth_raw, dtype=np.float32)
+        num_instances = 0
+        if self.apply_seg:
+            label_mask = np.zeros_like(depth_raw, dtype=np.uint8)
+            predict_boxes = np.zeros((12, 4))
+            predict_classes = np.zeros((12,))
+            predict_masks = np.zeros((12, 300, 300))
+            mask_threshold = 0.5
+            predict_scores = np.zeros((12,))
+            num_instances = predict_boxes.shape[0]
+            mask_indexes = []
+            for i in range(num_instances):
+                index = np.where(predict_masks[i] > mask_threshold)
+                label_mask[index] = i + 1
+                mask_indexes.append(index)
+            # https://scikit-image.org/docs/0.20.x/api/skimage.measure.html?highlight=label#regionprops-table
+            props = measure.regionprops_table(label_mask, properties=("centroid"))
+            colors = [
+                [255, 165, 0],
+                [255, 255, 0],
+                [255, 0, 255],
+                [0, 255, 255],
+                [255, 0, 0],
+                [0, 255, 0],
+                [0, 128, 128],
+                [128, 0, 128],
+                [128, 0, 0],
+                [139, 69, 19],
+            ]
+            for i in range(num_instances):
+                centroid = props["centroid"][i]
+                for y, x in zip(mask_indexes[i][0], mask_indexes[i][1]):
+                    scale_img[y, x] = self.centroid_scale((y, x), centroid)
+                    l_img[y, x] = colors[predict_classes[i]]
+
+        # 直线检测
+        lines_angle = []
+        line_img=rgb_raw.copy()
+        if self.apply_line_detect:
+            gray_image = color.rgb2gray(rgb_raw)
+            edges = feature.canny(gray_image, sigma=2)
+            for i in range(num_instances):
+                inst_mask = label_mask == i + 1
+                inst_mask = morphology.binary_dilation(inst_mask, morphology.disk(5))
+                lines = transform.probabilistic_hough_line(
+                    edges, threshold=10, line_length=10, line_gap=3
+                )
+                for line in lines:
+                    angles = []
+                    (x0, y0), (x1, y1) = line
+                    rr, cc, val = draw.line_aa(y0, x0, y1, x1)
+                    mask = (-1 < rr) & (rr < 480) & (-1 < cc) & (cc < 640)
+                    draw_line = (rr[mask], cc[mask])
+                    line_img[line] += (
+                        ((0, 255, 0) - line_img[draw_line]) * np.expand_dims(val, 1)
+                    ).astype(np.uint8)
+                    angle = math.atan2(y1 - y0, x1 - x0)
+                    if angle > math.pi / 2:
+                        angle -= math.pi
+                    elif angle < -math.pi / 2:
+                        angle += math.pi
+                    angles.append(angle)
+                    lines_angle.append(angles)
+
+        # 调整图像到网络输入大小
+        rgb_raw = self.resize(rgb_raw)
+        depth_raw = self.resize(depth_raw)
+        if self.apply_seg:
+            label_mask = self.resize(label_mask)
+            scale_img = self.resize(scale_img)
+            l_img = self.resize(l_img)
         if self.pub_inter_data:
             self.dpub.publish(
-                ros_numpy.msgify(Image, to_u8(depth_raw), encoding="mono8")
+                ros_numpy.msgify(Image, self.to_u8(depth_raw), encoding="mono8")
             )
         rgb = rgb_raw.transpose((2, 0, 1))  # (3,size,size)
         depth = np.expand_dims(depth_raw, 0)  # (1,size,size)
-        rgb = normalise(rgb)
-        depth = normalise(depth, 1000)
+        rgb = self.normalise(rgb)
+        depth = self.normalise(depth, 1000)
         x = np.concatenate((depth, rgb), 0)
         x = np.expand_dims(x, 0)  # (1, 4, size, size)
+        x = torch.from_numpy(x).to(self.device)
 
         # 推理
-        x = torch.from_numpy(x).to(self.device)
         with torch.no_grad():
             pred = self.model.predict(x)
 
         # 后处理
-        q_img, ang_img, width_img = post_process_output(
+        q_img, ang_img, width_img = self.post_process_output(
             pred["pos"], pred["cos"], pred["sin"], pred["width"], self.apply_gaussian
         )
         """尺寸与输入相同,典型区间:
         -0.01~0.96
         -0.90~1.36
         -3.05~60.57"""
-        q_img*=scale_img
+        if self.apply_seg:
+            q_img *= scale_img
         if self.pub_inter_data:
-            self.qpub.publish(ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8"))
-            self.apub.publish(ros_numpy.msgify(Image, to_u8(ang_img), encoding="mono8"))
-            self.wpub.publish(
-                ros_numpy.msgify(Image, to_u8(width_img), encoding="mono8")
+            if self.apply_seg:
+                self.labelpub.publish(ros_numpy.msgify(Image, l_img, encoding="rgb8"))
+                self.linepub.publish(ros_numpy.msgify(Image, line_img, encoding="rgb8"))
+            self.qpub.publish(
+                ros_numpy.msgify(Image, self.to_u8(q_img), encoding="mono8")
             )
-        min_width = width_img.min() if width_img.min() < 0 else 0
-        grasps = detect_grasps(q_img, ang_img, width_img, 5,label_img)
+            self.apub.publish(
+                ros_numpy.msgify(Image, self.to_u8(ang_img), encoding="mono8")
+            )
+            self.wpub.publish(
+                ros_numpy.msgify(Image, self.to_u8(width_img), encoding="mono8")
+            )
+
+        # 检测抓取
+        grasps = self.detect_grasps(q_img, ang_img, width_img, 5, label_mask,lines_angle)
+
         t_end = time.perf_counter()
         rospy.loginfo(f"推理完成,耗时: {(t_end - t_start)*1000:.2f}ms")
         if len(grasps) == 0:
@@ -198,8 +354,9 @@ class GraspPlanner:
 
         # 绘制抓取线
         if self.pub_vis:
+            min_width = width_img.min() if width_img.min() < 0 else 0
             for g in grasps:
-                line, val = g.draw(min_width, self.size)
+                line, val = g.draw(min_width, (self.size, self.size))
                 if self.vis_type == "rgb":
                     rgb_raw[line] += (
                         ((255, 0, 0) - rgb_raw[line]) * np.expand_dims(val, 1)
@@ -207,20 +364,19 @@ class GraspPlanner:
                 elif self.vis_type == "depth":
                     y = g.center[0]
                     x = g.center[1]
-                    print(depth_raw[y-1:y+1,x-1:x+1])
-                    depth_raw[y-1:y+1,x-1:x+1] = 0
-                    # depth_raw[line] += (val * 200).astype(np.uint16)
+                    depth_raw[line] += (val * 200).astype(np.uint16)
+                    depth_raw[y - 1 : y + 2, x - 1 : x + 2] = depth_raw.min()
                 elif self.vis_type == "q":
                     q_img[line] += val
             if self.vis_type == "rgb":
                 self.vpub.publish(ros_numpy.msgify(Image, rgb_raw, encoding="rgb8"))
             elif self.vis_type == "depth":
                 self.vpub.publish(
-                    ros_numpy.msgify(Image, to_u8(depth_raw), encoding="mono8")
+                    ros_numpy.msgify(Image, self.to_u8(depth_raw), encoding="mono8")
                 )
             elif self.vis_type == "q":
                 self.vpub.publish(
-                    ros_numpy.msgify(Image, to_u8(q_img), encoding="mono8")
+                    ros_numpy.msgify(Image, self.to_u8(q_img), encoding="mono8")
                 )
 
         # 计算相机坐标系下的坐标
@@ -230,10 +386,10 @@ class GraspPlanner:
             x = g.center[1]
             a = g.angle
             pos_z = depth_raw[y, x] * self.depth_scale + self.depth_bias
-            pos_z=(pos_z+desktop_depth)/2
+            pos_z = (pos_z + desktop_depth) / 2
             if not self.use_crop:
-                y=y/self.y_scale
-                x=x/self.x_scale
+                y = y / self.y_scale
+                x = x / self.x_scale
             pos_x = -(x - self.cx) * (pos_z / self.fx)
             pos_y = -(y - self.cy) * (pos_z / self.fy)
 
