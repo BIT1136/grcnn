@@ -6,6 +6,10 @@ from sensor_msgs.msg import Image
 from grcnn.srv import PredictGrasps
 
 
+def parse_exp(exp):
+    exp=str(exp).encode('utf-8').decode('unicode_escape').encode('latin1').decode('utf-8')
+    return exp
+
 if __name__ == "__main__":
     rospy.init_node("provider", disable_signals=True)
     # 调用服务不需要节点，这里是为了输出日志；disable_signals=True使得可以用ctrl+c退出
@@ -28,11 +32,11 @@ if __name__ == "__main__":
         try:
             rospy.wait_for_service("plan_grasp", 1)
         except rospy.ROSException as e:
-            rospy.logwarn("等待服务超时: %s", e)
+            rospy.logwarn("等待服务超时: %s", parse_exp(e))
             continue
         try:
             handle = rospy.ServiceProxy("plan_grasp", PredictGrasps)
             data = handle(rgb, depth)
             rospy.loginfo("返回的抓取规划:\n%s", data)
         except rospy.ServiceException as e:
-            rospy.logwarn("服务调用失败: %s", e)
+            rospy.logwarn("服务调用失败: %s", parse_exp(e))
