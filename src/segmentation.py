@@ -10,12 +10,12 @@ from Maskrcnn.backbone import BackboneWithFPN, LastLevelMaxPool
 
 
 class Segmentation:
-    def __init__(self,device):
+    def __init__(self, model_path, device):
+        assert os.path.exists(model_path), "模型文件不存在"
         self.device = device
 
         num_classes = 2  # 不包含背景
         box_thresh = 0.8
-        weights_path = "src/grcnn/models/model_19.pth"
 
         backbone = torchvision.models.mobilenet_v3_large()
         return_layers = {
@@ -56,10 +56,7 @@ class Segmentation:
             box_score_thresh=box_thresh,
         )
 
-        assert os.path.exists(weights_path), "{} file dose not exist.".format(
-            weights_path
-        )
-        weights_dict = torch.load(weights_path, map_location="cuda:0")
+        weights_dict = torch.load(model_path, map_location=self.device)
         weights_dict = (
             weights_dict["model"] if "model" in weights_dict else weights_dict
         )
@@ -70,22 +67,28 @@ class Segmentation:
         unlazy = torch.zeros((1, 3, 500, 500)).to(self.device)
         self.model(unlazy)
 
-    def __call__(self, original_img):
+    def predict(self, original_img: np.ndarray):
+        """
+        Args:
+            original_img: (3, M, N) 归一化后的RGB图像
+        """
+        if not (len(original_img.shape) == 3 and original_img.shape[0] == 3):
+            raise AssertionError("输入图像格式错误")
         img = torch.from_numpy(original_img).to(self.device)
+        img = torch.unsqueeze(img, dim=0)  # [1, 3, 480, 640]
 
         with torch.no_grad():
-            img = torch.unsqueeze(img, dim=0)  # [1, 3, 480, 640]
             predictions = self.model(img)[0]
 
-            predict_boxes = predictions["boxes"].to("cpu").numpy()
-            predict_classes = predictions["labels"].to("cpu").numpy()
-            predict_scores = predictions["scores"].to("cpu").numpy()
-            predict_masks = predictions["masks"].to("cpu").numpy()
-            predict_masks = np.squeeze(
-                predict_masks, axis=1
-            )  # [batch, 1, h, w] -> [batch, h, w]
+        predict_boxes = predictions["boxes"].to("cpu").numpy()
+        predict_classes = predictions["labels"].to("cpu").numpy()
+        predict_scores = predictions["scores"].to("cpu").numpy()
+        predict_masks = predictions["masks"].to("cpu").numpy()
+        predict_masks = np.squeeze(
+            predict_masks, axis=1
+        )  # [batch, 1, h, w] -> [batch, h, w]
 
-            if len(predict_boxes) == 0:
-                raise Exception("分割无结果")
+        if len(predict_boxes) == 0:
+            raise Exception("分割无结果")
 
-            return predict_boxes, predict_classes, predict_scores, predict_masks
+        return predict_boxes, predict_classes, predict_scores, predict_masks

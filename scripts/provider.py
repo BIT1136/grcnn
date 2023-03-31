@@ -7,8 +7,15 @@ from grcnn.srv import PredictGrasps
 
 
 def parse_exp(exp):
-    exp=str(exp).encode('utf-8').decode('unicode_escape').encode('latin1').decode('utf-8')
+    exp = (
+        str(exp)
+        .encode("utf-8")
+        .decode("unicode_escape")
+        .encode("latin1")
+        .decode("utf-8")
+    )
     return exp
+
 
 if __name__ == "__main__":
     rospy.init_node("provider", disable_signals=True)
