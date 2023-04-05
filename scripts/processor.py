@@ -210,6 +210,7 @@ class GraspPlanner:
             grasp_point = tuple(grasp_point_array)
             grasp_angle = ang_img[grasp_point]
             grasp_width = width_img[grasp_point]
+            grasp_quality= q_img[grasp_point]
             if label_mask is not None:
                 inst = label_mask[grasp_point] - 1
                 if lines_angle:
@@ -222,8 +223,9 @@ class GraspPlanner:
                         and diff[min_index] < np.pi / 8
                     ):
                         grasp_angle = lines_angle[inst][min_index]
-            g = Grasp(grasp_point, grasp_angle, grasp_width)
+            g = Grasp(grasp_point, grasp_angle, grasp_width,grasp_quality)
             grasps.append(g)
+        grasps.sort(key=lambda x: x.quality, reverse=True)
         return grasps
 
     def callback(self, data):
