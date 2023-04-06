@@ -38,7 +38,7 @@ class GraspPlanner:
     def __init__(self):
         self.get_ros_param()
 
-        model_path = "src/grcnn/models/jac_rgbd_epoch_48_iou_0.93"
+        model_path = "../models/jac_rgbd_epoch_48_iou_0.93"
         rospy.logdebug(f"加载抓取规划网络 {model_path}")
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.gr_convnet = GRConvNet(model_path, device, self.apply_gaussian)
@@ -46,7 +46,7 @@ class GraspPlanner:
         if self.apply_seg:
             from segmentation import Segmentation
 
-            model_path = "src/grcnn/models/model_19.pth"
+            model_path = "../models/model_19.pth"
             rospy.logdebug(f"加载实例分割网络 {model_path}")
             self.seg = Segmentation(model_path, device)
             self.colors = [
@@ -62,9 +62,8 @@ class GraspPlanner:
                 [139, 69, 19],
             ]
 
-        info_topic = rospy.get_param("~info_topic", "/d435/camera/depth/camera_info")
         try:
-            msg: CameraInfo = rospy.wait_for_message(info_topic, CameraInfo, 1)
+            msg: CameraInfo = rospy.wait_for_message(self.info_topic, CameraInfo, 1)
         except rospy.ROSException as e:
             msg = CameraInfo()
             msg.K = [
@@ -105,8 +104,10 @@ class GraspPlanner:
             self.wpub = ImagePublisher("img_w", "mono8")
         if self.pub_vis:
             self.vpub = ImagePublisher("plotted_grabs", "rgb8")
-        rospy.Service("plan_grasp", PredictGrasps, self.callback)
-        rospy.loginfo("抓取规划器就绪")
+        
+        rospy.Service(f"{rospy.get_name()}/predict_grasps", PredictGrasps, self.callback)
+        
+        rospy.loginfo(f"{rospy.get_name()}节点就绪")
 
     def get_ros_param(self):
         self.apply_seg = rospy.get_param("~apply_seg", True)
@@ -133,6 +134,8 @@ class GraspPlanner:
         """抓取结果绘制在何种图像上,depth:深度图,rgb:rgb图,q:预测的抓取质量图"""
         self.use_crop = rospy.get_param("~use_crop", False)
         """裁剪图像至目标尺寸，否则将图像压缩至目标尺寸"""
+
+        self.info_topic = rospy.get_param("~info_topic", "/d435/camera/depth/camera_info")
 
     def resize(self, img, is_label=False) -> np.ndarray:
         if self.use_crop:
@@ -412,6 +415,6 @@ class GraspPlanner:
 
 
 if __name__ == "__main__":
-    rospy.init_node("grasp_planner_2d", log_level=rospy.DEBUG)
+    rospy.init_node("grcnn_server", log_level=rospy.DEBUG)
     p = GraspPlanner()
     rospy.spin()

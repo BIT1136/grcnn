@@ -22,14 +22,14 @@ if __name__ == "__main__":
     # 调用服务不需要节点，这里是为了输出日志；disable_signals=True使得可以用ctrl+c退出
     while input() == "":
         try:
-            rgb = rospy.wait_for_message("/d435/camera/color/image_raw", Image, 10)
+            rgb = rospy.wait_for_message("/d435/camera/color/image_raw", Image, 1)
         except rospy.ROSException as e:
             rospy.logwarn(e)
             continue
         else:
             rospy.loginfo("获取RGB图")
         try:
-            depth = rospy.wait_for_message("/d435/camera/depth/image_raw", Image, 10)
+            depth = rospy.wait_for_message("/d435/camera/depth/image_raw", Image, 1)
         except rospy.ROSException as e:
             rospy.logwarn(e)
             continue

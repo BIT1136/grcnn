@@ -1,3 +1,5 @@
 <launch>
-    <node name="process_rgbd" pkg="grcnn" type="processor.py"/>
+    <node pkg="grcnn" type="processor.py" name="grcnn_server" cwd="node" output="screen">
+        <param name="apply_seg" value="false"/>
+    </node>
 </launch>
