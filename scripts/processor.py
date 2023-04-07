@@ -40,8 +40,8 @@ class GraspPlanner:
 
         model_path = "../models/jac_rgbd_epoch_48_iou_0.93"
         rospy.logdebug(f"加载抓取规划网络 {model_path}")
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.gr_convnet = GRConvNet(model_path, device, self.apply_gaussian)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.gr_convnet = GRConvNet(model_path, device)
 
         if self.apply_seg:
             from segmentation import Segmentation
@@ -104,9 +104,11 @@ class GraspPlanner:
             self.wpub = ImagePublisher("img_w", "mono8")
         if self.pub_vis:
             self.vpub = ImagePublisher("plotted_grabs", "rgb8")
-        
-        rospy.Service(f"{rospy.get_name()}/predict_grasps", PredictGrasps, self.callback)
-        
+
+        rospy.Service(
+            f"{rospy.get_name()}/predict_grasps", PredictGrasps, self.callback
+        )
+
         rospy.loginfo(f"{rospy.get_name()}节点就绪")
 
     def get_ros_param(self):
@@ -115,27 +117,25 @@ class GraspPlanner:
         self.apply_line_detect = rospy.get_param("~apply_line_detect", True)
         """是否检测直线以增强效果.针对矩形物体抓取方向不正确做出的修正,某些情况下可能增加误判.apply_seg需为True"""
         self.apply_line_detect = self.apply_seg and self.apply_line_detect
-        self.angle_policy = rospy.get_param("~angle_policy", "strict")
+        self.angle_policy = rospy.get_param("~angle_policy", "neighborhood")
         """strict:将推理出的抓取角度改为最接近的直线角度
         neighborhood:将直线角度一个邻域内的抓取角度改为直线角度"""
 
-        self.output_meter = rospy.get_param("~output_matric", True)
-        """设置输出单位为米,否则为毫米"""
         self.invalid_depth_policy = rospy.get_param("~invalid_depth_policy", "mean")
         """mean:将无效值替换为深度图其他值的均值
         mode:将无效值替换为深度图其他值的众数"""
-        self.apply_gaussian = rospy.get_param("~apply_gaussian", True)
-        """是否对网络输出进行高斯滤波"""
         self.pub_inter_data = rospy.get_param("~pub_inter_data", True)
-        """是否发布修复的深度图和原始网络输出"""
+        """是否发布中间数据,包括实例分割和grcnn原始输出等"""
         self.pub_vis = rospy.get_param("~pub_vis", True)
         """是否发布绘制的抓取结果"""
         self.vis_type = rospy.get_param("~vis_type", "rgb")
         """抓取结果绘制在何种图像上,depth:深度图,rgb:rgb图,q:预测的抓取质量图"""
         self.use_crop = rospy.get_param("~use_crop", False)
-        """裁剪图像至目标尺寸，否则将图像压缩至目标尺寸"""
+        """裁剪图像至目标尺寸,否则将图像压缩至目标尺寸"""
 
-        self.info_topic = rospy.get_param("~info_topic", "/d435/camera/depth/camera_info")
+        self.info_topic = rospy.get_param(
+            "~info_topic", "/d435/camera/depth/camera_info"
+        )
 
     def resize(self, img, is_label=False) -> np.ndarray:
         if self.use_crop:
@@ -213,7 +213,7 @@ class GraspPlanner:
             grasp_point = tuple(grasp_point_array)
             grasp_angle = ang_img[grasp_point]
             grasp_width = width_img[grasp_point]
-            grasp_quality= q_img[grasp_point]
+            grasp_quality = q_img[grasp_point]
             if label_mask is not None:
                 inst = label_mask[grasp_point] - 1
                 if lines_angle:
@@ -226,7 +226,7 @@ class GraspPlanner:
                         and diff[min_index] < np.pi / 8
                     ):
                         grasp_angle = lines_angle[inst][min_index]
-            g = Grasp(grasp_point, grasp_angle, grasp_width,grasp_quality)
+            g = Grasp(grasp_point, grasp_angle, grasp_width, grasp_quality)
             grasps.append(g)
         grasps.sort(key=lambda x: x.quality, reverse=True)
         return grasps
@@ -256,7 +256,7 @@ class GraspPlanner:
         # 处理实例分割
         label_mask = None
         l_img = np.zeros(list(depth_raw.shape) + [3], dtype=np.uint8)  # 彩色标签显示
-        scale_img = np.zeros_like(depth_raw, dtype=np.float32)
+        scale_img = np.zeros_like(depth_raw, dtype=np.float32)  # q_img 缩放系数
         num_instances = 0
         if self.apply_seg:
             img = np.transpose(rgb_raw, (2, 0, 1))
@@ -270,16 +270,16 @@ class GraspPlanner:
                 index = np.where(predict_masks[i] > mask_threshold)
                 label_mask[index] = i + 1
                 mask_indexes.append(index)
-            # https://scikit-image.org/docs/0.20.x/api/skimage.measure.html?highlight=label#regionprops-table
-            props = measure.regionprops_table(label_mask, properties=("centroid",))
 
+            # 根据实例重心计算q_img缩放系数
+            props = measure.regionprops_table(label_mask, properties=("centroid",))
             for i in range(num_instances):
                 centroid = (props["centroid-0"][i], props["centroid-1"][i])
                 for y, x in zip(mask_indexes[i][0], mask_indexes[i][1]):
                     scale_img[y, x] = self.centroid_scale((y, x), centroid)
                     l_img[y, x] = self.colors[predict_classes[i]]
 
-        # 直线检测
+        # 每个实例mask膨胀后进行直线检测
         lines_angle = []
         line_img = rgb_raw.copy()
         if self.apply_line_detect:
@@ -398,10 +398,9 @@ class GraspPlanner:
                 rospy.logwarn(f"深度值过小: {pos_z:.3f}mm, 丢弃")
                 continue
 
-            if self.output_meter:
-                pos_z = pos_z / 1000
-                pos_x = pos_x / 1000
-                pos_y = pos_y / 1000
+            pos_z /= 1000
+            pos_x /= 1000
+            pos_y /= 1000
 
             rospy.loginfo(f"抓取方案: [{pos_x:.3f},{pos_y:.3f},{pos_z:.3f}], {a:.3f}")
             predict_grasps.append(GraspCandidate(Point(pos_x, pos_y, pos_z), -a))
