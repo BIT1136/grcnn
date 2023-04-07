@@ -1,3 +1,0 @@
-[submodule "src/Maskrcnn"]
-	path = src/Maskrcnn
-	url = git@github.com:BIT1136/Maskrcnn.git

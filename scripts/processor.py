@@ -2,6 +2,7 @@
 
 import time
 import math
+from typing import Union
 
 import torch
 import numpy as np
@@ -44,11 +45,11 @@ class GraspPlanner:
         self.gr_convnet = GRConvNet(model_path, device)
 
         if self.apply_seg:
-            from segmentation import Segmentation
+            from maskrcnn_ros.srv import InstanceSeg
 
-            model_path = "../models/model_19.pth"
-            rospy.logdebug(f"加载实例分割网络 {model_path}")
-            self.seg = Segmentation(model_path, device)
+            self.seg = rospy.ServiceProxy(
+                "/maskrcnn_ros_server/seg_instance", InstanceSeg
+            )
             self.colors = [
                 [255, 165, 0],
                 [255, 255, 0],
@@ -173,8 +174,12 @@ class GraspPlanner:
             else:
                 raise NotImplementedError
 
-    def centroid_scale(self, x, y) -> np.float32:
-        return 1 - 0.01 * np.sqrt((x[0] - y[0]) ** 2 + (x[1] - y[1]) ** 2)
+    def centroid_scale(self, img: imgf32, index, centroid):
+        for y, x in zip(index[0], index[1]):
+            img[y, x] = 1 - 0.01 * np.sqrt(
+                (y - centroid[0]) ** 2 + (x - centroid[1]) ** 2
+            )
+        return img
 
     def to_u8(self, array: np.ndarray, max=255) -> npt.NDArray[np.uint8]:
         array = array - array.min()
@@ -186,26 +191,101 @@ class GraspPlanner:
         img = img.astype(np.float32) / factor
         return np.clip(img - img.mean(), -1, 1)
 
+    def do_seg(self, depth_raw, rgb_raw):
+        # 处理实例分割
+        label_mask = None
+        l_img = np.zeros(list(depth_raw.shape) + [3], dtype=np.uint8)  # 彩色标签显示
+        scale_img = np.zeros_like(depth_raw, dtype=np.float32)  # q_img 缩放系数
+        num_instances = 0
+        if self.apply_seg:
+            try:
+                resp = self.seg(ros_numpy.msgify(Image, rgb_raw, encoding="rgb8"))
+            except rospy.ServiceException as e:
+                rospy.logerr(f"分割服务调用失败: {e} 本次推理不使用分割结果")
+                return None, 1, []
+            else:
+                label_mask = ros_numpy.numpify(resp.seg)
+                num_instances = label_mask.max()
+                mask_indexes = []
+                for i in range(num_instances):
+                    index = np.where(label_mask == i + 1)
+                    mask_indexes.append(index)
+
+                # 根据实例重心计算q_img缩放系数
+                props = measure.regionprops_table(label_mask, properties=("centroid",))
+                for i in range(num_instances):
+                    centroid = (props["centroid-0"][i], props["centroid-1"][i])
+                    scale_img = self.centroid_scale(
+                        scale_img, mask_indexes[i], centroid
+                    )
+                    l_img[mask_indexes[i]] = self.colors[i]
+
+                l_img = self.resize(l_img)
+                if self.apply_seg:
+                    self.labelpub(l_img)
+
+        # 每个实例mask膨胀后进行直线检测
+        lines_angle = []
+        if self.apply_line_detect:
+            line_img = rgb_raw.copy()
+            gray_image = color.rgb2gray(rgb_raw)
+            edges = feature.canny(gray_image, sigma=2)
+            for i in range(num_instances):
+                inst_mask = label_mask == i + 1
+                inst_mask = morphology.binary_dilation(inst_mask, morphology.disk(5))
+                masked_edges = np.zeros_like(edges)
+                masked_edges[inst_mask] = edges[inst_mask]
+                lines = transform.probabilistic_hough_line(
+                    masked_edges, threshold=10, line_length=25, line_gap=10, seed=0
+                )
+                rospy.logdebug(f"检测第 {i} 个实例")
+                rospy.logdebug(f"检测到 {len(lines)} 条直线")
+                angles = []
+                for line in lines:
+                    (x0, y0), (x1, y1) = line
+                    rr, cc, val = draw.line_aa(y0, x0, y1, x1)
+                    mask = (-1 < rr) & (rr < 480) & (-1 < cc) & (cc < 640)
+                    draw_line = (rr[mask], cc[mask])
+                    line_img[draw_line] += (
+                        ((0, 255, 0) - line_img[draw_line]) * np.expand_dims(val, 1)
+                    ).astype(np.uint8)
+                    angle = math.atan2(y1 - y0, x1 - x0)
+                    angle += math.pi / 2  # 夹爪应垂直于检测到的线段
+                    if angle > math.pi / 2:
+                        angle -= math.pi
+                    elif angle < -math.pi / 2:
+                        angle += math.pi
+                    angles.append(angle)
+                lines_angle.append(angles)
+                rospy.logdebug(f"直线角度: {angles}")
+            if self.pub_inter_data:
+                self.linepub(line_img)
+
+        label_mask = self.resize(label_mask, is_label=True)
+        scale_img = self.resize(scale_img)
+
+        return label_mask, scale_img, lines_angle
+
     def detect_grasps(
         self,
         q_img: imgf32,
         ang_img: imgf32,
         width_img: imgf32,
-        num_grasps=1,
-        label_mask=None,
+        label_mask: Union[npt.NDArray[np.int_], None] = None,
         lines_angle=[],
     ) -> list[Grasp]:
+        min_distance = 10
+        threshold = 0.75
         if label_mask is not None:
             local_max = feature.peak_local_max(
                 q_img,
-                min_distance=50,
-                threshold_abs=0.5,
-                num_peaks=num_grasps,
+                min_distance,
+                threshold_rel=threshold,
                 labels=label_mask,
             )
         else:
             local_max = feature.peak_local_max(
-                q_img, min_distance=50, threshold_abs=0.5, num_peaks=num_grasps
+                q_img, min_distance, threshold_rel=threshold
             )
 
         grasps = []
@@ -244,83 +324,23 @@ class GraspPlanner:
         invalid_mask = (depth_raw == 0) | (depth_raw > 1000)
         if self.invalid_depth_policy == "mean":
             mean_val = depth_raw[valid_mask].mean()
-            rospy.logdebug(f"使用平均数 {mean_val} 替换深度图中的 {invalid_mask.sum()} 个无效值")
+            rospy.logdebug(f"使用平均数 {mean_val:.3f} 替换深度图中的 {invalid_mask.sum()} 个无效值")
             depth_raw[invalid_mask] = mean_val
         elif self.invalid_depth_policy == "mode":
             mode_val = stats.mode(depth_raw[valid_mask], axis=None, keepdims=False)[0]
-            rospy.logdebug(f"使用众数 {mode_val} 替换深度图中的 {invalid_mask.sum()} 个无效值")
+            rospy.logdebug(f"使用众数 {mode_val:.3f} 替换深度图中的 {invalid_mask.sum()} 个无效值")
             depth_raw[invalid_mask] = mode_val
         # TODO use nearest depth value as desktop_depth
         desktop_depth = stats.mode(depth_raw, axis=None, keepdims=False)[0]
 
-        # 处理实例分割
-        label_mask = None
-        l_img = np.zeros(list(depth_raw.shape) + [3], dtype=np.uint8)  # 彩色标签显示
-        scale_img = np.zeros_like(depth_raw, dtype=np.float32)  # q_img 缩放系数
-        num_instances = 0
+        label_mask, scale_img, lines_angle = None, 1, []
         if self.apply_seg:
-            img = np.transpose(rgb_raw, (2, 0, 1))
-            img = self.normalise(img)
-            _, predict_classes, _, predict_masks = self.seg.predict(img)
-            label_mask = np.zeros_like(depth_raw, dtype=np.uint8)
-            mask_threshold = 0.5
-            num_instances = len(predict_classes)
-            mask_indexes = []
-            for i in range(num_instances):
-                index = np.where(predict_masks[i] > mask_threshold)
-                label_mask[index] = i + 1
-                mask_indexes.append(index)
-
-            # 根据实例重心计算q_img缩放系数
-            props = measure.regionprops_table(label_mask, properties=("centroid",))
-            for i in range(num_instances):
-                centroid = (props["centroid-0"][i], props["centroid-1"][i])
-                for y, x in zip(mask_indexes[i][0], mask_indexes[i][1]):
-                    scale_img[y, x] = self.centroid_scale((y, x), centroid)
-                    l_img[y, x] = self.colors[predict_classes[i]]
-
-        # 每个实例mask膨胀后进行直线检测
-        lines_angle = []
-        line_img = rgb_raw.copy()
-        if self.apply_line_detect:
-            gray_image = color.rgb2gray(rgb_raw)
-            edges = feature.canny(gray_image, sigma=2)
-            for i in range(num_instances):
-                inst_mask = label_mask == i + 1
-                inst_mask = morphology.binary_dilation(inst_mask, morphology.disk(5))
-                masked_edges = np.zeros_like(edges)
-                masked_edges[inst_mask] = edges[inst_mask]
-                lines = transform.probabilistic_hough_line(
-                    masked_edges, threshold=10, line_length=25, line_gap=10, seed=0
-                )
-                rospy.logdebug(f"检测第 {i} 个实例")
-                rospy.logdebug(f"检测到 {len(lines)} 条直线")
-                angles = []
-                for line in lines:
-                    (x0, y0), (x1, y1) = line
-                    rr, cc, val = draw.line_aa(y0, x0, y1, x1)
-                    mask = (-1 < rr) & (rr < 480) & (-1 < cc) & (cc < 640)
-                    draw_line = (rr[mask], cc[mask])
-                    line_img[draw_line] += (
-                        ((0, 255, 0) - line_img[draw_line]) * np.expand_dims(val, 1)
-                    ).astype(np.uint8)
-                    angle = math.atan2(y1 - y0, x1 - x0)
-                    angle += math.pi / 2  # 夹爪应垂直于检测到的线段
-                    if angle > math.pi / 2:
-                        angle -= math.pi
-                    elif angle < -math.pi / 2:
-                        angle += math.pi
-                    angles.append(angle)
-                lines_angle.append(angles)
-                rospy.logdebug(f"直线角度 {angles}")
+            label_mask, scale_img, lines_angle = self.do_seg(depth_raw, rgb_raw)
 
         # 调整图像到网络输入大小
         rgb_raw = self.resize(rgb_raw)
         depth_raw = self.resize(depth_raw)
-        if self.apply_seg:
-            label_mask = self.resize(label_mask, is_label=True)
-            scale_img = self.resize(scale_img)
-            l_img = self.resize(l_img)
+
         if self.pub_inter_data:
             self.dpub(self.to_u8(depth_raw))
         rgb = rgb_raw.transpose((2, 0, 1))  # (3,size,size)
@@ -337,18 +357,12 @@ class GraspPlanner:
         if self.apply_seg:
             q_img *= scale_img
         if self.pub_inter_data:
-            if self.apply_seg:
-                self.labelpub(l_img)
-                if self.apply_line_detect:
-                    self.linepub(line_img)
             self.qpub(self.to_u8(q_img))
             self.apub(self.to_u8(ang_img))
             self.wpub(self.to_u8(width_img))
 
         # 检测抓取
-        grasps = self.detect_grasps(
-            q_img, ang_img, width_img, 5, label_mask, lines_angle
-        )
+        grasps = self.detect_grasps(q_img, ang_img, width_img, label_mask, lines_angle)
 
         t_end = time.perf_counter()
         rospy.loginfo(f"推理完成,耗时: {(t_end - t_start)*1000:.2f}ms")

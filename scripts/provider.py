@@ -18,6 +18,7 @@ def parse_exp(exp):
 
 
 if __name__ == "__main__":
+    service_name = "process_rgbd/predict_grasps"
     rospy.init_node("provider", disable_signals=True)
     # 调用服务不需要节点，这里是为了输出日志；disable_signals=True使得可以用ctrl+c退出
     while input() == "":
@@ -28,6 +29,7 @@ if __name__ == "__main__":
             continue
         else:
             rospy.loginfo("获取RGB图")
+
         try:
             depth = rospy.wait_for_message("/d435/camera/depth/image_raw", Image, 1)
         except rospy.ROSException as e:
@@ -35,14 +37,15 @@ if __name__ == "__main__":
             continue
         else:
             rospy.loginfo("获取深度图")
-        # rospy.loginfo("np images:\n%s\n%s\n",rgb[0],depth[0])
+
         try:
-            rospy.wait_for_service("plan_grasp", 1)
+            rospy.wait_for_service(service_name, 1)
         except rospy.ROSException as e:
             rospy.logwarn("等待服务超时: %s", parse_exp(e))
             continue
+
         try:
-            handle = rospy.ServiceProxy("plan_grasp", PredictGrasps)
+            handle = rospy.ServiceProxy(service_name, PredictGrasps)
             data = handle(rgb, depth)
             rospy.loginfo("返回的抓取规划:\n%s", data)
         except rospy.ServiceException as e:
