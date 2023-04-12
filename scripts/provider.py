@@ -1,4 +1,4 @@
-#!/root/mambaforge/envs/grcnn/bin/python
+#!/usr/bin/env python
 # 按键时从orbbec话题截取RGB和深度图发送到话题
 
 import rospy
