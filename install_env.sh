@@ -1,1 +1,0 @@
-mamba create -n grcnn -y python=3.10 pytorch torchvision numpy scipy scikit-image rospkg
