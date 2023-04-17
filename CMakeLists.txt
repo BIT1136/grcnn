@@ -4,6 +4,7 @@ project(grcnn)
 find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
+  geometry_msgs
   message_generation
 )
 
@@ -12,16 +13,19 @@ catkin_python_setup()
 add_message_files(
   FILES
   GraspCandidate.msg
+  GraspCandidateWithIdx.msg
 )
 
 add_service_files(
   FILES
   PredictGrasps.srv
+  PredictGraspsWithSeg.srv
 )
 
 generate_messages(
   DEPENDENCIES
   sensor_msgs
+  geometry_msgs
 )
 
 catkin_package(

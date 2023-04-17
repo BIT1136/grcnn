@@ -6,20 +6,20 @@ from typing import Union
 
 import torch
 import numpy as np
-import numpy.typing as npt
 from scipy import stats
+from scipy.spatial.transform import Rotation
 from skimage import measure, morphology, transform, feature, color, draw
 
 import rospy
 import ros_numpy
 from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point,Quaternion
 
-from grcnn.msg import GraspCandidate
-from grcnn.srv import PredictGrasps, PredictGraspsResponse
+from grcnn.msg import GraspCandidate,GraspCandidateWithIdx
+from grcnn.srv import PredictGrasps, PredictGraspsResponse,PredictGraspsWithSeg,PredictGraspsWithSegResponse
 from grasp import Grasp
 from gr_convnet import GRConvNet
-from type import imgf32
+from type import *
 
 
 class ImagePublisher:
@@ -40,8 +40,8 @@ class GraspPlanner:
         self.get_ros_param()
 
         model_path = "../models/jac_rgbd_epoch_48_iou_0.93"
-        rospy.logdebug(f"加载抓取规划网络 {model_path}")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        rospy.logdebug(f"加载抓取规划网络 {model_path} 至 {device}")
         self.gr_convnet = GRConvNet(model_path, device)
 
         if self.apply_seg:
@@ -109,6 +109,7 @@ class GraspPlanner:
         rospy.Service(
             f"{rospy.get_name()}/predict_grasps", PredictGrasps, self.callback
         )
+        rospy.Service(f"{rospy.get_name()}/predict_grasps_with_seg", PredictGraspsWithSeg, self.callback)
 
         rospy.loginfo(f"{rospy.get_name()}节点就绪")
 
@@ -191,44 +192,46 @@ class GraspPlanner:
         img = img.astype(np.float32) / factor
         return np.clip(img - img.mean(), -1, 1)
 
-    def do_seg(self, depth_raw, rgb_raw):
-        # 处理实例分割
+    def handle_seg(self, depth_raw, data):
         label_mask = None
         l_img = np.zeros(list(depth_raw.shape) + [3], dtype=np.uint8)  # 彩色标签显示
         scale_img = np.zeros_like(depth_raw, dtype=np.float32)  # q_img 缩放系数
         num_instances = 0
+        seg=None
         if self.apply_seg:
-            try:
-                resp = self.seg(ros_numpy.msgify(Image, rgb_raw, encoding="rgb8"))
-            except rospy.ServiceException as e:
-                rospy.logerr(f"分割服务调用失败: {e} 本次推理不使用分割结果")
-                return None, 1, []
+            if hasattr(data,"seg"):
+                seg=data.seg
             else:
-                label_mask = ros_numpy.numpify(resp.seg)
-                num_instances = label_mask.max()
-                mask_indexes = []
-                for i in range(num_instances):
-                    index = np.where(label_mask == i + 1)
-                    mask_indexes.append(index)
+                try:
+                    seg = self.seg(data.rgb_raw)
+                except rospy.ServiceException as e:
+                    rospy.logerr(f"分割服务调用失败: {e} 本次推理不使用分割结果")
+                    return None, 1, []
+        label_mask = ros_numpy.numpify(seg)
+        num_instances = label_mask.max()
+        mask_indexes = []
+        for i in range(num_instances):
+            index = np.where(label_mask == i + 1)
+            mask_indexes.append(index)
 
-                # 根据实例重心计算q_img缩放系数
-                props = measure.regionprops_table(label_mask, properties=("centroid",))
-                for i in range(num_instances):
-                    centroid = (props["centroid-0"][i], props["centroid-1"][i])
-                    scale_img = self.centroid_scale(
-                        scale_img, mask_indexes[i], centroid
-                    )
-                    l_img[mask_indexes[i]] = self.colors[i]
+        # 根据实例重心计算q_img缩放系数
+        props = measure.regionprops_table(label_mask, properties=("centroid",))
+        for i in range(num_instances):
+            centroid = (props["centroid-0"][i], props["centroid-1"][i])
+            scale_img = self.centroid_scale(
+                scale_img, mask_indexes[i], centroid
+            )
+            l_img[mask_indexes[i]] = self.colors[i]
 
-                l_img = self.resize(l_img)
-                if self.apply_seg:
-                    self.labelpub(l_img)
+        l_img = self.resize(l_img)
+        if self.apply_seg:
+            self.labelpub(l_img)
 
         # 每个实例mask膨胀后进行直线检测
         lines_angle = []
         if self.apply_line_detect:
-            line_img = rgb_raw.copy()
-            gray_image = color.rgb2gray(rgb_raw)
+            line_img = data.rgb_raw.copy()
+            gray_image = color.rgb2gray(data.rgb_raw)
             edges = feature.canny(gray_image, sigma=2)
             for i in range(num_instances):
                 inst_mask = label_mask == i + 1
@@ -335,7 +338,7 @@ class GraspPlanner:
 
         label_mask, scale_img, lines_angle = None, 1, []
         if self.apply_seg:
-            label_mask, scale_img, lines_angle = self.do_seg(depth_raw, rgb_raw)
+            label_mask, scale_img, lines_angle = self.handle_seg(depth_raw, data)
 
         # 调整图像到网络输入大小
         rgb_raw = self.resize(rgb_raw)
@@ -367,6 +370,7 @@ class GraspPlanner:
         t_end = time.perf_counter()
         rospy.loginfo(f"推理完成,耗时: {(t_end - t_start)*1000:.2f}ms")
         if len(grasps) == 0:
+            rospy.logerr("未检测到抓取")
             raise rospy.ServiceException("未检测到抓取")
         else:
             rospy.loginfo(f"检测到 {len(grasps)} 个抓取候选: {[str(g) for g in grasps]}")
@@ -396,6 +400,7 @@ class GraspPlanner:
 
         # 计算相机坐标系下的坐标
         predict_grasps = []
+        predict_grasps_with_idx=[]
         for g in grasps:
             y = g.center[0]
             x = g.center[1]
@@ -419,11 +424,21 @@ class GraspPlanner:
             rospy.loginfo(f"抓取方案: [{pos_x:.3f},{pos_y:.3f},{pos_z:.3f}], {a:.3f}")
             predict_grasps.append(GraspCandidate(Point(pos_x, pos_y, pos_z), -a))
 
+            grasp=GraspCandidateWithIdx()
+            grasp.pose.position=Point(pos_x, pos_y, pos_z)
+            grasp.pose.orientation=Quaternion(Rotation.from_rotvec([0,0,-a]).as_quat())
+            grasp.quality=g.quality
+            predict_grasps_with_idx.append(grasp)
+
         if len(predict_grasps) == 0:
             raise rospy.ServiceException("无法找到有效的抓取方案")
 
-        res = PredictGraspsResponse()
-        res.grasps = predict_grasps
+        if hasattr(data,"seg"):
+            res = PredictGraspsWithSegResponse()
+            res.grasps = predict_grasps_with_idx
+        else:
+            res = PredictGraspsResponse()
+            res.grasps = predict_grasps
         return res
 
 
