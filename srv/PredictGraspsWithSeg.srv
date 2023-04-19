@@ -1,7 +1,0 @@
-#请求:对齐的RGB和深度图(mm),以及实例分割图
-sensor_msgs/Image rgb
-sensor_msgs/Image depth
-sensor_msgs/Image seg
----
-#响应:一些可能的抓取,存放在数组中,按质量降序排列
-grcnn/GraspCandidateWithIdx[] grasps

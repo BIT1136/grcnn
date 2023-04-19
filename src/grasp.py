@@ -4,13 +4,14 @@ from skimage import draw
 
 
 class Grasp:
-    def __init__(self, center, angle, width, quality):
+    def __init__(self, center, angle, width, quality,inst_id):
         self.center = center
         """像素位置(行,列)即(y,x)"""
         self.angle = angle
         """极轴指向右侧，逆时针为正方向，单位为弧度"""
         self.width = width
         self.quality = quality
+        self.inst_id=inst_id
 
     def __str__(self) -> str:
         return f"center:{self.center}, angle:{self.angle:.3f}, width:{self.width:.3f}"
