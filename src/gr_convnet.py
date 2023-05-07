@@ -12,7 +12,7 @@ class GRConvNet:
         self.device = device
         self.model = torch.load(model_path, map_location=self.device)
         self.model.eval()
-        unlazy = torch.zeros((1, 4, 300, 300)).to(self.device)
+        unlazy = torch.zeros((1, 4, self.size, self.size),device=self.device)
         self.model(unlazy)  # 网络第一次推理比较慢
 
     def post_process_output(self, q_img, cos_img, sin_img, width_img):

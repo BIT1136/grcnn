@@ -46,7 +46,7 @@ if __name__ == "__main__":
 
         try:
             handle = rospy.ServiceProxy(service_name, PredictGrasps)
-            data = handle(rgb, depth)
+            data = handle(rgb, depth,None)
             rospy.loginfo("返回的抓取规划:\n%s", data)
         except rospy.ServiceException as e:
             rospy.logwarn("服务调用失败: %s", parse_exp(e))

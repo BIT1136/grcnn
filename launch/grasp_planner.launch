@@ -1,7 +1,5 @@
 <launch>
     <node pkg="grcnn" type="processor.py" name="grcnn_server" cwd="node" output="screen">
-        <param name="apply_seg" value="false"/>
-        <param name="pub_inter_data" value="false"/>
-        <param name="pub_vis" value="false"/>
+        <param name="angle_policy" value="strict"/>
     </node>
 </launch>

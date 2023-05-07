@@ -282,6 +282,7 @@ class GraspPlanner:
                 labels=label_mask,
             )
         else:
+            # 行,列像素坐标
             local_max = feature.peak_local_max(
                 q_img, min_distance, threshold_rel=threshold
             )
@@ -367,7 +368,7 @@ class GraspPlanner:
         rospy.loginfo(f"推理完成,耗时: {(t_end - t_start)*1000:.2f}ms")
         if len(grasps) == 0:
             rospy.logerr("未检测到抓取")
-            raise rospy.ServiceException("未检测到抓取")
+            return PredictGraspsResponse()
         else:
             rospy.loginfo(f"检测到 {len(grasps)} 个抓取候选: {[str(g) for g in grasps]}")
 
@@ -405,8 +406,8 @@ class GraspPlanner:
             if not self.use_crop:
                 y = y / self.y_scale
                 x = x / self.x_scale
-            pos_x = -(x - self.cx) * (pos_z / self.fx)
-            pos_y = -(y - self.cy) * (pos_z / self.fy)
+            pos_x = (x - self.cx) * (pos_z / self.fx)
+            pos_y = (y - self.cy) * (pos_z / self.fy)
 
             if pos_z < 200:
                 rospy.logwarn(f"深度值过小: {pos_z:.3f}mm, 丢弃")
@@ -420,7 +421,7 @@ class GraspPlanner:
 
             grasp=GraspCandidate()
             grasp.pose.position=Point(pos_x, pos_y, pos_z)
-            grasp.pose.orientation=Quaternion(*Rotation.from_rotvec([0,0,-a]).as_quat().tolist())
+            grasp.pose.orientation=Quaternion(*Rotation.from_rotvec([0,0,np.pi/2-a]).as_quat().tolist())
             grasp.inst_id=g.inst_id
             grasp.quality=g.quality
             predict_grasps.append(grasp)
