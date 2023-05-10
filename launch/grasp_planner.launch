@@ -1,5 +1,5 @@
 <launch>
-    <node pkg="grcnn" type="processor.py" name="grcnn_server" cwd="node" output="screen">
+    <node pkg="grcnn" type="grcnn_server.py" name="grcnn_server" cwd="node" output="screen">
         <param name="angle_policy" value="strict"/>
     </node>
 </launch>
