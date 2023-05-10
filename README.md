@@ -4,7 +4,9 @@
 
 ## 安装依赖
 
-  conda create -n grcnn python=3.10 pytorch torchvision numpy scipy scikit-image rospkg
+    conda create -n grcnn python=3.10 pytorch=1.13 torchvision=0.14 numpy=1.24 scipy=1.10 scikit-image=0.20 rospkg=1.5
+
+可能兼容其它版本的环境；安装时.condarc中排首位的频道为conda-forge。
 
 ## 运行节点
 
@@ -15,3 +17,12 @@
     roslaunch grcnn test.launch
 
 `provider.py`从指定的话题截取RGB和深度图并调用`processor.py`提供的推理服务。
+
+## 训练模型
+
+使用原仓库并遵循其说明以进行训练，依赖安装方式为：
+
+    conda create -n grcnn_train python numpy=1.19 pytorch torchvision opencv scikit-image tensorboardx matplotlib pillow
+    pip install torchsummary
+
+使用numpy=1.19以兼容原仓库代码中的`np.int`
