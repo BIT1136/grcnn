@@ -1,5 +1,7 @@
 <launch>
     <node pkg="grcnn" type="grcnn_server.py" name="grcnn_server" cwd="node" output="screen">
+        <param name="apply_seg" value="true"/>
+        <param name="apply_line_detect" value="true"/>
         <param name="angle_policy" value="strict"/>
     </node>
 </launch>

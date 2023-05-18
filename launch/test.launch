@@ -1,6 +1,6 @@
 <launch>
     <node pkg="grcnn" type="provider.py" name="publish_rgbd" output="screen"/>
     <node pkg="grcnn" type="grcnn_server.py" name="process_rgbd" cwd="node" output="screen">
-        <param name="apply_seg" value="false"/>
+        <!-- <param name="apply_seg" value="false"/> -->
     </node>
 </launch>
