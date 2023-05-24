@@ -140,9 +140,9 @@ class GraspPlanner:
         """裁剪图像至目标尺寸,否则将图像压缩至目标尺寸"""
 
         self.info_topic = rospy.get_param(
-            "~info_topic",
+            # "~info_topic",
             "/camera/depth/camera_info"
-            # "~info_topic", "/d435/camera/color/camera_info"
+            # "/d435/camera/color/camera_info"
         )
 
     def resize(self, img, is_label=False) -> np.ndarray:
@@ -183,12 +183,12 @@ class GraspPlanner:
 
     def centroid_scale(self, img: imgf32, index, centroid):
         for y, x in zip(index[0], index[1]):
-            s = 1.2 - 0.002 * np.sqrt(
-                (y - centroid[0]) ** 2 + (x - centroid[1]) ** 2
-            )  # for objs
-            # s=1.2 - 0.02 * np.sqrt(
+            # s = 1.2 - 0.01 * np.sqrt(
             #     (y - centroid[0]) ** 2 + (x - centroid[1]) ** 2
-            # )# for toys
+            # )  # for objs
+            s=1.2 - 0.02 * np.sqrt(
+                (y - centroid[0]) ** 2 + (x - centroid[1]) ** 2
+            )# for toys
             img[y, x] = max(s, 0)
         return img
 
@@ -258,9 +258,15 @@ class GraspPlanner:
                         (-1 < rr) & (rr < self.height) & (-1 < cc) & (cc < self.width)
                     )
                     draw_line = (rr[mask], cc[mask])
-                    line_img[draw_line] += (
-                        ((0, 255, 0) - line_img[draw_line]) * np.expand_dims(val, 1)
-                    ).astype(np.uint8)
+                    print(len(draw_line[0]))#0
+                    print(line_img[draw_line].shape)
+                    print(np.expand_dims(val, 1).shape)
+                    print(((0, 255, 0) - line_img[draw_line]).shape)
+                    # if(len(draw_line[0])!=0):
+                    #     print(((0, 255, 0) - line_img[draw_line]) * np.expand_dims(val, 1).shape)
+                    #     line_img[draw_line] += (
+                    #         ((0, 255, 0) - line_img[draw_line]) * np.expand_dims(val, 1)
+                    #     ).astype(np.uint8)
                     angle = math.atan2(y1 - y0, x1 - x0)
                     angle += math.pi / 2  # 夹爪应垂直于检测到的线段
                     if angle > math.pi / 2:
@@ -317,7 +323,7 @@ class GraspPlanner:
                         rospy.logdebug(
                             f"角度{grasp_angle}修正为{lines_angle[inst][min_index]}"
                         )
-                        grasp_angle = lines_angle[inst][min_index]
+                        grasp_angle = lines_angle[inst][min_index]+math.pi/2
                     elif (
                         self.angle_policy == "neighborhood"
                         and diff[min_index] < np.pi / 8
