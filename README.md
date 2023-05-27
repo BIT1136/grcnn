@@ -1,6 +1,6 @@
 # Generative Residual Convolutional Neural Network
 
-https://github.com/skumra/robotic-grasping 的 ROS 包装，代码也主要来自此仓库；原论文为 [Antipodal Robotic Grasping using Generative Residual Convolutional Neural Network](https://arxiv.org/abs/1909.04810). `src/inference` 来自原存储库中的 `inference`。
+代码主要来自[此仓库](https://github.com/skumra/robotic-grasping)，原论文为[Antipodal Robotic Grasping using Generative Residual Convolutional Neural Network](https://arxiv.org/abs/1909.04810)。`src/inference`来自原仓库中的`inference`。
 
 ## 安装依赖
 
