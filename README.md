@@ -4,9 +4,7 @@
 
 ## 安装依赖
 
-    conda create -n grcnn python=3.10 pytorch=1.13 torchvision=0.14 numpy=1.24 scipy=1.10 scikit-image=0.20 rospkg=1.5
-
-可能兼容其它版本的环境；安装时.condarc中排首位的频道为conda-forge。
+    conda create -c conda-forge -n grcnn python=3.10 pytorch=1.13 torchvision=0.14 numpy=1.24 scipy=1.10 scikit-image=0.20 rospkg=1.5
 
 ## 运行节点
 
